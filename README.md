@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/icon.png" alt="Aureate icon" width="160"/></p>
+
 # Aureate
 
 *Gild the orchestra — tape and console saturation glue for strings, brass and layers.*

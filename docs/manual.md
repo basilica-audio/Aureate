@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" alt="Aureate icon" width="120"/></p>
+
 # Aureate User Manual
 
 ## What Aureate is
