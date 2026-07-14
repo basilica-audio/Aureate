@@ -59,6 +59,66 @@ namespace aur
             0.0f,
             juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
+        //======================================================================
+        // Bias: additional saturator asymmetry trim, on top of (added to)
+        // Warmth's own bias contribution. Default 0% - neutral, so Warmth
+        // alone still fully determines the asymmetry unless a session
+        // deliberately reaches for this control.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::bias, 1 },
+            "Bias",
+            juce::NormalisableRange<float> (-100.0f, 100.0f, 0.1f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        //======================================================================
+        // Wow/Flutter: tape-transport speed instability amount. Default 0% -
+        // off, so the plugin stays a clean glue processor unless this
+        // character is deliberately engaged.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::wowFlutter, 1 },
+            "Wow/Flutter",
+            juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        //======================================================================
+        // Hiss: shaped noise floor mixed into the wet path. Default 0% - off.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::hiss, 1 },
+            "Hiss",
+            juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        //======================================================================
+        // Character: selects the saturator's transfer-function family. Tape
+        // (index 0) is the default/original model, matching the v0.1 core
+        // DSP's behaviour exactly, so existing sessions/tests that never
+        // touch this parameter keep the original sound.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::character, 1 },
+            "Character",
+            juce::StringArray { "Tape", "Console", "Valve" },
+            0));
+
+        //======================================================================
+        // HF Trim / LF Trim: fixed-frequency shelf trims, independent of and
+        // in addition to Tone's tilt shelves. Default 0 dB - flat.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::hfTrim, 1 },
+            "HF Trim",
+            juce::NormalisableRange<float> (-6.0f, 6.0f, 0.01f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::lfTrim, 1 },
+            "LF Trim",
+            juce::NormalisableRange<float> (-6.0f, 6.0f, 0.01f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("dB")));
+
         return layout;
     }
 }

@@ -62,6 +62,17 @@ private:
     std::atomic<float>* tonePercent = nullptr;
     std::atomic<float>* mixPercent = nullptr;
     std::atomic<float>* outputDb = nullptr;
+    std::atomic<float>* biasPercent = nullptr;
+    std::atomic<float>* wowFlutterPercent = nullptr;
+    std::atomic<float>* hissPercent = nullptr;
+    std::atomic<float>* characterIndex = nullptr;
+    std::atomic<float>* hfTrimDb = nullptr;
+    std::atomic<float>* lfTrimDb = nullptr;
+
+    // Pushes the current APVTS parameter values into `engine`. Shared by
+    // prepareToPlay() (seeding the engine before the first block) and
+    // processBlock() (every block) so the two can never drift apart.
+    void pushParametersToEngine();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AureateAudioProcessor)
 };

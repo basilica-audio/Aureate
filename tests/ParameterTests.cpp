@@ -57,15 +57,17 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         static constexpr const char* allIds[] = {
             ParamIDs::drive, ParamIDs::warmth, ParamIDs::tone, ParamIDs::mix, ParamIDs::output,
+            ParamIDs::bias, ParamIDs::wowFlutter, ParamIDs::hiss, ParamIDs::character,
+            ParamIDs::hfTrim, ParamIDs::lfTrim,
         };
 
         for (const auto* id : allIds)
             CHECK (apvts.getParameter (id) != nullptr);
     }
 
-    SECTION ("total parameter count matches the v0.1 layout")
+    SECTION ("total parameter count matches the v0.1.0 layout")
     {
-        CHECK (apvts.processor.getParameters().size() == 5);
+        CHECK (apvts.processor.getParameters().size() == 11);
     }
 
     SECTION ("Drive: saturator input gain defaults and range")
@@ -96,5 +98,46 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         checkFloatDefault (apvts, ParamIDs::output, 0.0f);
         checkFloatRange (apvts, ParamIDs::output, -24.0f, 24.0f);
+    }
+
+    SECTION ("Bias: additional asymmetry trim defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::bias, 0.0f);
+        checkFloatRange (apvts, ParamIDs::bias, -100.0f, 100.0f);
+    }
+
+    SECTION ("Wow/Flutter: tape-transport instability defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::wowFlutter, 0.0f);
+        checkFloatRange (apvts, ParamIDs::wowFlutter, 0.0f, 100.0f);
+    }
+
+    SECTION ("Hiss: noise-floor amount defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::hiss, 0.0f);
+        checkFloatRange (apvts, ParamIDs::hiss, 0.0f, 100.0f);
+    }
+
+    SECTION ("HF Trim: high-shelf trim defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::hfTrim, 0.0f);
+        checkFloatRange (apvts, ParamIDs::hfTrim, -6.0f, 6.0f);
+    }
+
+    SECTION ("LF Trim: low-shelf trim defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::lfTrim, 0.0f);
+        checkFloatRange (apvts, ParamIDs::lfTrim, -6.0f, 6.0f);
+    }
+
+    SECTION ("Character: model choice defaults to Tape (index 0), three choices")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::character));
+        REQUIRE (param != nullptr);
+        CHECK (param->choices.size() == 3);
+        CHECK (param->choices[0] == "Tape");
+        CHECK (param->choices[1] == "Console");
+        CHECK (param->choices[2] == "Valve");
+        CHECK (param->getIndex() == 0);
     }
 }

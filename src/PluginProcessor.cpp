@@ -15,12 +15,24 @@ AureateAudioProcessor::AureateAudioProcessor()
     tonePercent = apvts.getRawParameterValue (ParamIDs::tone);
     mixPercent = apvts.getRawParameterValue (ParamIDs::mix);
     outputDb = apvts.getRawParameterValue (ParamIDs::output);
+    biasPercent = apvts.getRawParameterValue (ParamIDs::bias);
+    wowFlutterPercent = apvts.getRawParameterValue (ParamIDs::wowFlutter);
+    hissPercent = apvts.getRawParameterValue (ParamIDs::hiss);
+    characterIndex = apvts.getRawParameterValue (ParamIDs::character);
+    hfTrimDb = apvts.getRawParameterValue (ParamIDs::hfTrim);
+    lfTrimDb = apvts.getRawParameterValue (ParamIDs::lfTrim);
 
     jassert (driveDb != nullptr);
     jassert (warmthPercent != nullptr);
     jassert (tonePercent != nullptr);
     jassert (mixPercent != nullptr);
     jassert (outputDb != nullptr);
+    jassert (biasPercent != nullptr);
+    jassert (wowFlutterPercent != nullptr);
+    jassert (hissPercent != nullptr);
+    jassert (characterIndex != nullptr);
+    jassert (hfTrimDb != nullptr);
+    jassert (lfTrimDb != nullptr);
 }
 
 AureateAudioProcessor::~AureateAudioProcessor() = default;
@@ -92,11 +104,7 @@ void AureateAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
     // prepare() primes the filter coefficients, so the very first block
     // after prepareToPlay() already reflects the host/session's actual
     // parameter values rather than the engine's built-in defaults.
-    engine.setDriveDb (driveDb->load (std::memory_order_relaxed));
-    engine.setWarmthProportion (warmthPercent->load (std::memory_order_relaxed) * 0.01f);
-    engine.setToneProportion (tonePercent->load (std::memory_order_relaxed) * 0.01f);
-    engine.setMixProportion (mixPercent->load (std::memory_order_relaxed) * 0.01f);
-    engine.setOutputDb (outputDb->load (std::memory_order_relaxed));
+    pushParametersToEngine();
 
     engine.prepare (spec);
 
@@ -145,14 +153,26 @@ void AureateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     for (auto channel = totalNumInputChannels; channel < totalNumOutputChannels; ++channel)
         buffer.clear (channel, 0, buffer.getNumSamples());
 
+    pushParametersToEngine();
+
+    juce::dsp::AudioBlock<float> block (buffer);
+    engine.process (block);
+}
+
+void AureateAudioProcessor::pushParametersToEngine()
+{
     engine.setDriveDb (driveDb->load (std::memory_order_relaxed));
     engine.setWarmthProportion (warmthPercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setToneProportion (tonePercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setMixProportion (mixPercent->load (std::memory_order_relaxed) * 0.01f);
     engine.setOutputDb (outputDb->load (std::memory_order_relaxed));
-
-    juce::dsp::AudioBlock<float> block (buffer);
-    engine.process (block);
+    engine.setBiasProportion (biasPercent->load (std::memory_order_relaxed) * 0.01f);
+    engine.setWowFlutterProportion (wowFlutterPercent->load (std::memory_order_relaxed) * 0.01f);
+    engine.setHissProportion (hissPercent->load (std::memory_order_relaxed) * 0.01f);
+    engine.setCharacter (static_cast<TapeSaturator::Model> (juce::roundToInt (
+        characterIndex->load (std::memory_order_relaxed))));
+    engine.setHfTrimDb (hfTrimDb->load (std::memory_order_relaxed));
+    engine.setLfTrimDb (lfTrimDb->load (std::memory_order_relaxed));
 }
 
 //==============================================================================

@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <limits>
 #include <random>
 
@@ -47,6 +48,12 @@ TEST_CASE ("Full-scale input at maximum drive produces no NaN/Inf", "[robustness
     setParam (processor, ParamIDs::tone, 100.0f);
     setParam (processor, ParamIDs::mix, 100.0f);
     setParam (processor, ParamIDs::output, 24.0f);
+    setParam (processor, ParamIDs::bias, 100.0f);
+    setParam (processor, ParamIDs::wowFlutter, 100.0f);
+    setParam (processor, ParamIDs::hiss, 100.0f);
+    setParam (processor, ParamIDs::character, 2.0f); // Valve
+    setParam (processor, ParamIDs::hfTrim, 6.0f);
+    setParam (processor, ParamIDs::lfTrim, 6.0f);
 
     juce::AudioBuffer<float> buffer (2, 512);
     TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 1.0f);
@@ -116,6 +123,12 @@ TEST_CASE ("Extreme parameter values at both range edges produce no NaN/Inf", "[
         setParam (processor, ParamIDs::tone, useMinimum ? -100.0f : 100.0f);
         setParam (processor, ParamIDs::mix, useMinimum ? 0.0f : 100.0f);
         setParam (processor, ParamIDs::output, useMinimum ? -24.0f : 24.0f);
+        setParam (processor, ParamIDs::bias, useMinimum ? -100.0f : 100.0f);
+        setParam (processor, ParamIDs::wowFlutter, useMinimum ? 0.0f : 100.0f);
+        setParam (processor, ParamIDs::hiss, useMinimum ? 0.0f : 100.0f);
+        setParam (processor, ParamIDs::character, useMinimum ? 0.0f : 2.0f);
+        setParam (processor, ParamIDs::hfTrim, useMinimum ? -6.0f : 6.0f);
+        setParam (processor, ParamIDs::lfTrim, useMinimum ? -6.0f : 6.0f);
 
         TestHelpers::fillWithSine (buffer, 44100.0, 440.0, 0.8f);
 
@@ -141,6 +154,12 @@ TEST_CASE ("Rapid parameter automation across many blocks produces no NaN/Inf", 
         setParam (processor, ParamIDs::tone, -100.0f + unit (rng) * 200.0f);
         setParam (processor, ParamIDs::mix, unit (rng) * 100.0f);
         setParam (processor, ParamIDs::output, -24.0f + unit (rng) * 48.0f);
+        setParam (processor, ParamIDs::bias, -100.0f + unit (rng) * 200.0f);
+        setParam (processor, ParamIDs::wowFlutter, unit (rng) * 100.0f);
+        setParam (processor, ParamIDs::hiss, unit (rng) * 100.0f);
+        setParam (processor, ParamIDs::character, std::floor (unit (rng) * 3.0f));
+        setParam (processor, ParamIDs::hfTrim, -6.0f + unit (rng) * 12.0f);
+        setParam (processor, ParamIDs::lfTrim, -6.0f + unit (rng) * 12.0f);
 
         juce::AudioBuffer<float> buffer (2, 256);
         TestHelpers::fillWithSine (buffer, 48000.0, 200.0 + unit (rng) * 4000.0, 0.7f);

@@ -10,22 +10,31 @@
 <!-- ==BEGIN BODY== (plugin engineer: replace this block with What it is / Features / Signal flow / Roadmap) -->
 ## What it is
 
-Aureate is a tape/console saturation "glue" plugin for orchestral material - strings, brass, and layered/bussed tracks that need cohesion and a little analog warmth without sounding like a guitar pedal. It combines a 4x oversampled, asymmetric tape-style saturator with a gentle high-frequency rolloff (both under one "Warmth" control) and a console-style tilt EQ, so the same knob that adds harmonic richness also softens the top end the way tape does, and the tilt control lets you re-balance the result without reaching for a separate EQ.
+Aureate is a tape/console saturation "glue" plugin for orchestral material - strings, brass, and layered/bussed tracks that need cohesion and a little analog warmth without sounding like a guitar pedal. It combines a 4x oversampled, character-selectable saturator (Tape/Console/Valve) with tape-transport artefacts (Wow/Flutter, Hiss) and a console-style tilt EQ plus independent HF/LF trim shelves, so a single Warmth knob adds harmonic richness and softens the top end the way tape does, while the rest of the controls let you dial in exactly which flavour of "glue" a section needs.
 
 ## Features
 
+- **Wow/Flutter** (0-100%): tape-transport speed instability (slow "wow" + faster "flutter"), off by default.
 - **Drive** (0-24 dB): gain into the saturator. Kept modest by design - Aureate is a glue processor, not a distortion.
 - **Warmth** (0-100%): jointly controls the saturator's asymmetry (single-ended, tape-like character) and a gentle pre-clip high-frequency rolloff (tape bias/self-erasure character).
+- **Bias** (-100% to +100%): additional, independent saturator asymmetry trim on top of Warmth's own contribution.
+- **Character** (Tape / Console / Valve): selects the saturator's transfer-function family - smooth tanh, harder-edged cubic soft-clip, or exponential valve-style saturation.
 - **Tone** (-100% to +100%): a console-style tilt EQ - darker below 0%, brighter above, flat/unity at 0%.
+- **HF Trim** / **LF Trim** (-6 to +6 dB): independent fixed-frequency shelf trims, in addition to Tone's tilt.
+- **Hiss** (0-100%): shaped tape-hiss noise floor mixed into the wet path, off by default.
 - **Mix** (0-100%): dry/wet blend, delay-compensated so 0% is a sample-accurate passthrough of the input.
 - **Output** (-24 to +24 dB): final trim applied after the dry/wet mix.
-- Full latency reporting and host plugin-delay-compensation support (oversampling is the only source of latency).
+- Full latency reporting and host plugin-delay-compensation support (the 4x oversampler plus Wow/Flutter's fixed base delay are the plugin's only sources of latency, both accounted for in `getLatencySamples()`).
 - AU, VST3, and Standalone builds.
+
+See [`docs/manual.md`](docs/manual.md) for the full parameter reference and usage tips.
 
 ## Signal flow
 
 ```
-input -> Drive -> [4x oversampled: Warmth HF-rolloff -> asymmetric tape saturator -> tilt Tone]
+input -> Wow/Flutter -> Drive
+      -> [4x oversampled: Warmth HF-rolloff -> saturator (Character, Warmth+Bias asymmetry)
+         -> Tone tilt -> HF/LF Trim -> Hiss]
       -> downsample -> Dry/Wet Mix -> Output trim -> output
 ```
 

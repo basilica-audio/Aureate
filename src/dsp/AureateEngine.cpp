@@ -29,6 +29,12 @@ namespace
         return juce::jlimit (0.0f, 1.0f, proportion01) * maxBias;
     }
 
+    // Bias (-1 to 1) -> additional saturator bias contribution, linear.
+    float mapExplicitBiasToBias (float proportionMinus1To1, float maxExplicitBias) noexcept
+    {
+        return juce::jlimit (-1.0f, 1.0f, proportionMinus1To1) * maxExplicitBias;
+    }
+
     // Tone tilt (-1 to 1) -> shelf gain in dB, linear.
     float mapTiltToDb (float proportionMinus1To1, float maxTiltDb) noexcept
     {
@@ -41,6 +47,31 @@ AureateEngine::AureateEngine() = default;
 void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
 {
     sampleRate = spec.sampleRate;
+
+    //--------------------------------------------------------------------
+    // Wow/Flutter: modulated delay line at the host sample rate, ahead of
+    // Drive/oversampling. The base delay (and therefore its contribution to
+    // getLatencySamples() below) depends only on sampleRate, never on the
+    // live Wow/Flutter amount - see the class comment in AureateEngine.h for
+    // why that matters. Rounded to an exact integer sample count (at every
+    // sample rate, not just ones where the millisecond value happens to
+    // divide evenly) so that at amount == 0 the delay line's instantaneous
+    // delay is exactly an integer - i.e. a genuinely sample-accurate,
+    // LTI pure delay with no sub-sample interpolation smoothing - which is
+    // what keeps the dry/wet null test exact regardless of sample rate.
+    wowFlutterBaseDelaySamples = std::round (sampleRate * static_cast<double> (wowFlutterBaseDelayMs) / 1000.0);
+    wowFlutterMaxWowDepthSamples = sampleRate * static_cast<double> (wowFlutterMaxWowDepthMs) / 1000.0;
+    wowFlutterMaxFlutterDepthSamples = sampleRate * static_cast<double> (wowFlutterMaxFlutterDepthMs) / 1000.0;
+    wowFlutterWowPhaseIncrement = juce::MathConstants<double>::twoPi * static_cast<double> (wowFlutterWowRateHz) / sampleRate;
+    wowFlutterFlutterPhaseIncrement = juce::MathConstants<double>::twoPi * static_cast<double> (wowFlutterFlutterRateHz) / sampleRate;
+
+    // Generous guard margin above base+depth for the interpolator's own
+    // sample footprint and floating-point rounding.
+    const auto wowFlutterMaxDelaySamples = wowFlutterBaseDelaySamples + wowFlutterMaxWowDepthSamples
+                                            + wowFlutterMaxFlutterDepthSamples + 8.0;
+    wowFlutterDelayLine.setMaximumDelayInSamples (static_cast<int> (std::ceil (wowFlutterMaxDelaySamples)));
+    wowFlutterDelayLine.prepare (spec);
+    wowFlutterDelayLine.setDelay (static_cast<float> (wowFlutterBaseDelaySamples));
 
     driveGain.setRampDurationSeconds (smoothingTimeSeconds);
     driveGain.prepare (spec);
@@ -59,11 +90,17 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
         true);
     oversampler->initProcessing (static_cast<size_t> (spec.maximumBlockSize));
 
-    latencySamples = static_cast<int> (std::round (oversampler->getLatencyInSamples()));
+    // Total reported latency = the oversampler's latency + Wow/Flutter's
+    // fixed base delay (rounded to the nearest integer sample, as
+    // setLatencySamples() requires an integer). Both are prepare()-time
+    // constants only, so this never changes due to parameter automation.
+    latencySamples = static_cast<int> (std::round (oversampler->getLatencyInSamples()))
+                      + static_cast<int> (std::round (wowFlutterBaseDelaySamples));
 
-    // Warmth's HF-rolloff filter and the Tone tilt shelves run inside the
-    // oversampled block (see AureateEngine.h), so they must be prepared at
-    // the oversampled rate/block size, not the host's.
+    // Warmth's HF-rolloff filter, the Tone tilt shelves, and the HF/LF Trim
+    // shelves all run inside the oversampled block (see AureateEngine.h), so
+    // they must be prepared at the oversampled rate/block size, not the
+    // host's.
     const auto oversamplingMultiplier = 1u << static_cast<unsigned> (oversamplingFactorPow2);
     oversampledRate = sampleRate * static_cast<double> (oversamplingMultiplier);
 
@@ -75,6 +112,8 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
     warmthLowPass.prepare (oversampledSpec);
     tiltLowShelf.prepare (oversampledSpec);
     tiltHighShelf.prepare (oversampledSpec);
+    hfTrimShelf.prepare (oversampledSpec);
+    lfTrimShelf.prepare (oversampledSpec);
 
     outputGain.setRampDurationSeconds (smoothingTimeSeconds);
     outputGain.prepare (spec);
@@ -98,16 +137,27 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
     // default-constructed 0 on the very first block.
     const auto warmthLowPassHz = mapWarmthToLowPassHz (lastWarmthProportion01, warmthMinLowPassHz, warmthMaxLowPassHz);
     const auto warmthBias = mapWarmthToBias (lastWarmthProportion01, warmthMaxBias);
+    const auto explicitBias = mapExplicitBiasToBias (lastBiasProportion, maxExplicitBias);
     const auto tiltDb = mapTiltToDb (lastTiltProportion, maxTiltDb);
 
     warmthLowPassHzSmoothed.reset (oversampledRate, smoothingTimeSeconds);
     warmthLowPassHzSmoothed.setCurrentAndTargetValue (warmthLowPassHz);
     warmthBiasSmoothed.reset (sampleRate, smoothingTimeSeconds);
     warmthBiasSmoothed.setCurrentAndTargetValue (warmthBias);
+    explicitBiasSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    explicitBiasSmoothed.setCurrentAndTargetValue (explicitBias);
     tiltDbSmoothed.reset (sampleRate, smoothingTimeSeconds);
     tiltDbSmoothed.setCurrentAndTargetValue (tiltDb);
     mixSmoothed.reset (sampleRate, smoothingTimeSeconds);
     mixSmoothed.setCurrentAndTargetValue (lastMixProportion);
+    wowFlutterAmountSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    wowFlutterAmountSmoothed.setCurrentAndTargetValue (lastWowFlutterProportion01);
+    hissAmountSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    hissAmountSmoothed.setCurrentAndTargetValue (lastHissProportion01);
+    hfTrimDbSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    hfTrimDbSmoothed.setCurrentAndTargetValue (lastHfTrimDb);
+    lfTrimDbSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    lfTrimDbSmoothed.setCurrentAndTargetValue (lastLfTrimDb);
 
     reset();
 
@@ -120,10 +170,18 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
         oversampledRate, clampBelowNyquist (tiltLowShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (-tiltDb));
     *tiltHighShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, clampBelowNyquist (tiltHighShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (tiltDb));
+    *hfTrimShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        oversampledRate, clampBelowNyquist (hfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (lastHfTrimDb));
+    *lfTrimShelf.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
+        oversampledRate, clampBelowNyquist (lfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (lastLfTrimDb));
 }
 
 void AureateEngine::reset()
 {
+    wowFlutterDelayLine.reset();
+    wowFlutterWowPhase = 0.0;
+    wowFlutterFlutterPhase = 0.0;
+
     driveGain.reset();
 
     if (oversampler != nullptr)
@@ -132,8 +190,15 @@ void AureateEngine::reset()
     warmthLowPass.reset();
     tiltLowShelf.reset();
     tiltHighShelf.reset();
+    hfTrimShelf.reset();
+    lfTrimShelf.reset();
     outputGain.reset();
     dryWetMixer.reset();
+
+    // Deterministic re-seed: keeps Hiss's contribution bit-reproducible
+    // across reset()/prepare() cycles (playback stop/start, sample-rate
+    // change, etc.), which is what makes its own tests non-flaky.
+    hissRandom.setSeed (1);
 }
 
 void AureateEngine::setDriveDb (float newDriveDb)
@@ -165,6 +230,41 @@ void AureateEngine::setOutputDb (float newOutputDb)
     outputGain.setGainDecibels (newOutputDb);
 }
 
+void AureateEngine::setBiasProportion (float newProportionMinus1To1)
+{
+    lastBiasProportion = newProportionMinus1To1;
+    explicitBiasSmoothed.setTargetValue (mapExplicitBiasToBias (newProportionMinus1To1, maxExplicitBias));
+}
+
+void AureateEngine::setWowFlutterProportion (float newProportion01)
+{
+    lastWowFlutterProportion01 = newProportion01;
+    wowFlutterAmountSmoothed.setTargetValue (juce::jlimit (0.0f, 1.0f, newProportion01));
+}
+
+void AureateEngine::setHissProportion (float newProportion01)
+{
+    lastHissProportion01 = newProportion01;
+    hissAmountSmoothed.setTargetValue (juce::jlimit (0.0f, 1.0f, newProportion01));
+}
+
+void AureateEngine::setCharacter (TapeSaturator::Model newModel)
+{
+    character = newModel;
+}
+
+void AureateEngine::setHfTrimDb (float newTrimDb)
+{
+    lastHfTrimDb = newTrimDb;
+    hfTrimDbSmoothed.setTargetValue (newTrimDb);
+}
+
+void AureateEngine::setLfTrimDb (float newTrimDb)
+{
+    lastLfTrimDb = newTrimDb;
+    lfTrimDbSmoothed.setTargetValue (newTrimDb);
+}
+
 void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
 {
     const auto numSamples = block.getNumSamples();
@@ -173,23 +273,37 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
         return;
 
     // Coefficient recomputation involves trig calls (tan/cos), so the
-    // Warmth low-pass and Tone tilt shelves are smoothed and re-derived once
-    // per block rather than per sample - a standard real-time-safe
-    // compromise for IIR filters, whose coefficients aren't cheap to
-    // interpolate directly. Drive/Output still ramp sample-accurately via
-    // juce::dsp::Gain's internal SmoothedValue, and the saturator's bias and
-    // Mix are re-applied every block below.
+    // Warmth low-pass, Tone tilt shelves, and HF/LF Trim shelves are
+    // smoothed and re-derived once per block rather than per sample - a
+    // standard real-time-safe compromise for IIR filters, whose
+    // coefficients aren't cheap to interpolate directly. Drive/Output still
+    // ramp sample-accurately via juce::dsp::Gain's internal SmoothedValue;
+    // the saturator's bias terms, Wow/Flutter amount, Hiss amount, and Mix
+    // are re-applied every block below (Wow/Flutter's own per-sample
+    // modulation shape is recomputed every sample regardless, see below).
     const auto warmthLowPassHz = clampBelowNyquist (
         warmthLowPassHzSmoothed.skip (static_cast<int> (numSamples)), oversampledRate);
     const auto warmthBias = warmthBiasSmoothed.skip (static_cast<int> (numSamples));
+    const auto explicitBias = explicitBiasSmoothed.skip (static_cast<int> (numSamples));
     const auto tiltDb = tiltDbSmoothed.skip (static_cast<int> (numSamples));
     const auto wetMix = mixSmoothed.skip (static_cast<int> (numSamples));
+    const auto wowFlutterAmount = wowFlutterAmountSmoothed.skip (static_cast<int> (numSamples));
+    const auto hissAmount = hissAmountSmoothed.skip (static_cast<int> (numSamples));
+    const auto hfTrimDb = hfTrimDbSmoothed.skip (static_cast<int> (numSamples));
+    const auto lfTrimDb = lfTrimDbSmoothed.skip (static_cast<int> (numSamples));
+
+    const auto combinedBias = juce::jlimit (-maxCombinedBias, maxCombinedBias, warmthBias + explicitBias);
+    const auto hissGain = hissAmount * maxHissLinearGain;
 
     *warmthLowPass.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (oversampledRate, warmthLowPassHz, filterQ);
     *tiltLowShelf.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
         oversampledRate, clampBelowNyquist (tiltLowShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (-tiltDb));
     *tiltHighShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
         oversampledRate, clampBelowNyquist (tiltHighShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (tiltDb));
+    *hfTrimShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+        oversampledRate, clampBelowNyquist (hfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (hfTrimDb));
+    *lfTrimShelf.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
+        oversampledRate, clampBelowNyquist (lfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (lfTrimDb));
     dryWetMixer.setWetMixProportion (wetMix);
 
     juce::dsp::ProcessContextReplacing<float> context (block);
@@ -200,6 +314,44 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
     // time-aligned with the oversampled wet path below.
     dryWetMixer.pushDrySamples (block);
 
+    // Wow/Flutter: modulated delay line at the host sample rate, ahead of
+    // Drive/oversampling (see class comment). The depth (not the base
+    // delay) scales with the smoothed amount, so amount == 0 degenerates to
+    // a plain fixed delay of wowFlutterBaseDelaySamples - exactly what
+    // getLatencySamples() already accounts for, keeping the null test valid
+    // at the default (0%) amount without any special-casing here.
+    {
+        const auto wowDepthSamples = static_cast<double> (wowFlutterAmount) * wowFlutterMaxWowDepthSamples;
+        const auto flutterDepthSamples = static_cast<double> (wowFlutterAmount) * wowFlutterMaxFlutterDepthSamples;
+        const auto numChannels = block.getNumChannels();
+
+        for (size_t sample = 0; sample < numSamples; ++sample)
+        {
+            wowFlutterWowPhase += wowFlutterWowPhaseIncrement;
+            if (wowFlutterWowPhase >= juce::MathConstants<double>::twoPi)
+                wowFlutterWowPhase -= juce::MathConstants<double>::twoPi;
+
+            wowFlutterFlutterPhase += wowFlutterFlutterPhaseIncrement;
+            if (wowFlutterFlutterPhase >= juce::MathConstants<double>::twoPi)
+                wowFlutterFlutterPhase -= juce::MathConstants<double>::twoPi;
+
+            const auto modulationSamples = wowDepthSamples * std::sin (wowFlutterWowPhase)
+                                            + flutterDepthSamples * std::sin (wowFlutterFlutterPhase);
+            const auto delaySamples = wowFlutterBaseDelaySamples + modulationSamples;
+
+            wowFlutterDelayLine.setDelay (static_cast<float> (delaySamples));
+
+            for (size_t channel = 0; channel < numChannels; ++channel)
+            {
+                auto* channelData = block.getChannelPointer (channel);
+                const auto channelIndex = static_cast<int> (channel);
+
+                wowFlutterDelayLine.pushSample (channelIndex, channelData[sample]);
+                channelData[sample] = wowFlutterDelayLine.popSample (channelIndex);
+            }
+        }
+    }
+
     driveGain.process (context);
 
     auto oversampledBlock = oversampler->processSamplesUp (block);
@@ -207,7 +359,8 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
 
     // Tape-style saturation stage: gentle pre-clip HF rolloff (models tape
     // bias/self-erasure dulling highs before the nonlinearity), then the
-    // asymmetric tanh saturator itself. Both driven by Warmth.
+    // asymmetric saturator itself (Character-selected model, Warmth+Bias-
+    // driven asymmetry).
     warmthLowPass.process (oversampledContext);
 
     for (size_t channel = 0; channel < oversampledBlock.getNumChannels(); ++channel)
@@ -215,13 +368,36 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
         auto* channelData = oversampledBlock.getChannelPointer (channel);
 
         for (size_t sample = 0; sample < oversampledBlock.getNumSamples(); ++sample)
-            channelData[sample] = TapeSaturator::processSample (channelData[sample], warmthBias);
+            channelData[sample] = TapeSaturator::processSample (channelData[sample], combinedBias, character);
     }
 
     // Console-style tilt Tone, also run inside the oversampled domain
     // (immediately after the saturator, before downsampling).
     tiltLowShelf.process (oversampledContext);
     tiltHighShelf.process (oversampledContext);
+
+    // HF/LF Trim: independent fixed-frequency shelves, after Tone so a
+    // session can use Tone for the broad balance and Trim for a final touch
+    // at the extremes.
+    hfTrimShelf.process (oversampledContext);
+    lfTrimShelf.process (oversampledContext);
+
+    // Hiss: shaped noise mixed in last, inside the oversampled domain, so it
+    // inherits the downsampler's anti-aliasing filter below rather than
+    // needing its own explicit band-limiting filter here. Independent
+    // per-channel noise (unlike Wow/Flutter's channel-linked modulation),
+    // matching how tape hiss is typically decorrelated between the two
+    // channels of a stereo recording.
+    if (hissGain > 0.0f)
+    {
+        for (size_t channel = 0; channel < oversampledBlock.getNumChannels(); ++channel)
+        {
+            auto* channelData = oversampledBlock.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < oversampledBlock.getNumSamples(); ++sample)
+                channelData[sample] += (hissRandom.nextFloat() * 2.0f - 1.0f) * hissGain;
+        }
+    }
 
     oversampler->processSamplesDown (block);
 
