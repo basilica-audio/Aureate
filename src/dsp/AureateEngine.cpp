@@ -142,7 +142,21 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
     const auto explicitBias = mapExplicitBiasToBias (lastBiasProportion, maxExplicitBias);
     const auto tiltDb = mapTiltToDb (lastTiltProportion, maxTiltDb);
 
-    warmthLowPassHzSmoothed.reset (oversampledRate, smoothingTimeSeconds);
+    // Reset at the host sampleRate, NOT oversampledRate: process() below
+    // calls warmthLowPassHzSmoothed.skip(numSamples) once per block with
+    // numSamples taken from the host-rate block (before
+    // oversampler->processSamplesUp()), identically to every other smoother
+    // here - so stepsToTarget must be computed in that same host-rate
+    // domain, or the countdown (set from oversampledRate = sampleRate * 4)
+    // takes 4x as many host-rate skip() calls to exhaust, stretching this
+    // smoother's ramp to ~4x smoothingTimeSeconds in real time versus its
+    // siblings (see issue #12; verified against JUCE 8.0.14's
+    // SmoothedValue::reset()/skip(), which never reference sampleRate again
+    // after reset()). The resulting Hz *value* is still applied to a filter
+    // that runs at oversampledRate (see clampBelowNyquist() below) - only
+    // the smoother's own timebase needs to match the domain skip() is
+    // called from.
+    warmthLowPassHzSmoothed.reset (sampleRate, smoothingTimeSeconds);
     warmthLowPassHzSmoothed.setCurrentAndTargetValue (warmthLowPassHz);
     warmthBiasSmoothed.reset (sampleRate, smoothingTimeSeconds);
     warmthBiasSmoothed.setCurrentAndTargetValue (warmthBias);
