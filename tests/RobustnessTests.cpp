@@ -108,6 +108,51 @@ TEST_CASE ("Zero-sample buffer does not crash processBlock", "[robustness]")
     CHECK (buffer.getNumSamples() == 0);
 }
 
+TEST_CASE ("processBlock() with a block larger than samplesPerBlock does not process past the prepared capacity", "[robustness]")
+{
+    AureateAudioProcessor processor;
+
+    constexpr int preparedBlockSize = 64;
+    processor.prepareToPlay (48000.0, preparedBlockSize);
+
+    setParam (processor, ParamIDs::drive, 12.0f);
+    setParam (processor, ParamIDs::mix, 100.0f);
+
+    // Deliberately larger than what prepareToPlay() declared - a host
+    // contract violation, but juce::dsp::Oversampling's internal per-stage
+    // buffers (sized from samplesPerBlock at prepareToPlay() time, see
+    // AureateEngine::prepare()) do NOT grow for a later, bigger block, so
+    // processing it without a guard is a real out-of-bounds heap write in a
+    // Release build (issue #13).
+    constexpr int oversizedBlockSize = preparedBlockSize * 4;
+
+    juce::AudioBuffer<float> buffer (2, oversizedBlockSize);
+    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.5f);
+
+    juce::AudioBuffer<float> beforeProcessing;
+    beforeProcessing.makeCopyOf (buffer);
+
+    juce::MidiBuffer midi;
+    CHECK_NOTHROW (processor.processBlock (buffer, midi));
+
+    CHECK (TestHelpers::allSamplesFinite (buffer));
+
+    // Everything from preparedBlockSize onward must be left exactly as it
+    // was: the engine must only touch the sample range it was actually
+    // prepared for, not silently process (and potentially corrupt) the full
+    // oversized block. Before the fix, the whole (oversized) block flows
+    // through Drive/Wow-Flutter/the oversampler/Dry-Wet-Mix/Output, so this
+    // tail region gets overwritten too.
+    for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+    {
+        const auto* before = beforeProcessing.getReadPointer (channel);
+        const auto* after = buffer.getReadPointer (channel);
+
+        for (int sample = preparedBlockSize; sample < oversizedBlockSize; ++sample)
+            CHECK (juce::exactlyEqual (after[sample], before[sample]));
+    }
+}
+
 TEST_CASE ("Extreme parameter values at both range edges produce no NaN/Inf", "[robustness]")
 {
     AureateAudioProcessor processor;

@@ -47,6 +47,8 @@ AureateEngine::AureateEngine() = default;
 void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
 {
     sampleRate = spec.sampleRate;
+    preparedMaximumBlockSize = static_cast<size_t> (spec.maximumBlockSize);
+    preparedNumChannels = static_cast<size_t> (spec.numChannels);
 
     //--------------------------------------------------------------------
     // Wow/Flutter: modulated delay line at the host sample rate, ahead of
@@ -267,10 +269,33 @@ void AureateEngine::setLfTrimDb (float newTrimDb)
 
 void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
 {
-    const auto numSamples = block.getNumSamples();
+    const auto requestedSamples = block.getNumSamples();
 
-    if (numSamples == 0)
+    if (requestedSamples == 0)
         return;
+
+    // Defensive: clamp to the sample/channel counts declared to prepare().
+    // juce::dsp::Oversampling::initProcessing() (called from prepare()
+    // above) sizes each internal stage's buffer to exactly
+    // spec.maximumBlockSize * factor and does NOT grow it for a later,
+    // bigger block (JUCE 8.0.14, juce_dsp/processors/juce_Oversampling.cpp)
+    // - each stage's own processSamplesUp()/processSamplesDown() guards
+    // that only with a jassert, which is compiled out entirely in Release
+    // and - even in this Debug build - is a silent no-op unless a debugger
+    // is actually attached (see JUCE_BREAK_IN_DEBUGGER in
+    // juce_PlatformDefs.h), so an oversized block falls straight through to
+    // a real out-of-bounds heap write either way. Trimming the working
+    // block to what prepare() actually sized things for - rather than
+    // processing (and writing) past that capacity - is the same defensive
+    // pattern as sibling plugin lancet's LancetEngine::process() (see
+    // issue #13).
+    const auto numSamples = juce::jmin (requestedSamples, preparedMaximumBlockSize);
+    const auto numChannels = juce::jmin (block.getNumChannels(), preparedNumChannels);
+
+    if (numSamples == 0 || numChannels == 0)
+        return;
+
+    auto workingBlock = block.getSubBlock (0, numSamples).getSubsetChannelBlock (0, numChannels);
 
     // Coefficient recomputation involves trig calls (tan/cos), so the
     // Warmth low-pass, Tone tilt shelves, and HF/LF Trim shelves are
@@ -306,13 +331,13 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
         oversampledRate, clampBelowNyquist (lfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (lfTrimDb));
     dryWetMixer.setWetMixProportion (wetMix);
 
-    juce::dsp::ProcessContextReplacing<float> context (block);
+    juce::dsp::ProcessContextReplacing<float> context (workingBlock);
 
     // Capture the pre-processing signal as "dry" before any wet-path
-    // processing touches `block`. DryWetMixer internally delays this by
-    // getLatencySamples() (set via setWetLatency in prepare()) so it stays
-    // time-aligned with the oversampled wet path below.
-    dryWetMixer.pushDrySamples (block);
+    // processing touches `workingBlock`. DryWetMixer internally delays this
+    // by getLatencySamples() (set via setWetLatency in prepare()) so it
+    // stays time-aligned with the oversampled wet path below.
+    dryWetMixer.pushDrySamples (workingBlock);
 
     // Wow/Flutter: modulated delay line at the host sample rate, ahead of
     // Drive/oversampling (see class comment). The depth (not the base
@@ -323,7 +348,6 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
     {
         const auto wowDepthSamples = static_cast<double> (wowFlutterAmount) * wowFlutterMaxWowDepthSamples;
         const auto flutterDepthSamples = static_cast<double> (wowFlutterAmount) * wowFlutterMaxFlutterDepthSamples;
-        const auto numChannels = block.getNumChannels();
 
         for (size_t sample = 0; sample < numSamples; ++sample)
         {
@@ -343,7 +367,7 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
 
             for (size_t channel = 0; channel < numChannels; ++channel)
             {
-                auto* channelData = block.getChannelPointer (channel);
+                auto* channelData = workingBlock.getChannelPointer (channel);
                 const auto channelIndex = static_cast<int> (channel);
 
                 wowFlutterDelayLine.pushSample (channelIndex, channelData[sample]);
@@ -354,7 +378,7 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
 
     driveGain.process (context);
 
-    auto oversampledBlock = oversampler->processSamplesUp (block);
+    auto oversampledBlock = oversampler->processSamplesUp (workingBlock);
     juce::dsp::ProcessContextReplacing<float> oversampledContext (oversampledBlock);
 
     // Tape-style saturation stage: gentle pre-clip HF rolloff (models tape
@@ -399,9 +423,9 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
         }
     }
 
-    oversampler->processSamplesDown (block);
+    oversampler->processSamplesDown (workingBlock);
 
-    dryWetMixer.mixWetSamples (block);
+    dryWetMixer.mixWetSamples (workingBlock);
 
     // Output is a final master trim applied after the dry/wet mix, so it
     // scales the combined (not just wet) signal.

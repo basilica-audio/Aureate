@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `AureateEngine::process()` now clamps to the sample/channel counts declared to `prepare()` before processing, guarding against an out-of-bounds heap write in `juce::dsp::Oversampling`'s internal buffers if a host ever calls `processBlock()` with a block larger than it promised via `prepareToPlay()` (#13).
+
 ## [0.1.0] - 2026-07-14
 
 ### Added

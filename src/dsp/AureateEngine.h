@@ -48,9 +48,16 @@ public:
     // Safe to call from the audio thread (e.g. on playback stop/loop).
     void reset();
 
-    // Processes `block` in place. `block` must have at most the maximum
-    // sample/channel counts declared to prepare(); a zero-sample block is a
-    // safe no-op. No allocation occurs here.
+    // Processes `block` in place. If `block` exceeds the sample/channel
+    // counts declared to prepare(), it is defensively clamped to that
+    // capacity - only the leading subset is processed in place, the
+    // remainder of `block` is left untouched (see the .cpp for why: the
+    // oversampler's internal buffers do not grow past what prepare() gave
+    // them, so processing more would be a real out-of-bounds heap write in
+    // a Release build - this is a host-contract violation the plugin
+    // should never see, but is deliberately not undefined behaviour if it
+    // does happen). A zero-sample block is a safe no-op. No allocation
+    // occurs here.
     void process (juce::dsp::AudioBlock<float>& block);
 
     // Parameter setters, in real units (dB, 0-1/-1-1 proportion, or model
@@ -136,6 +143,14 @@ private:
 
     double sampleRate = 44100.0;
     double oversampledRate = 44100.0;
+
+    // The sample/channel counts declared to prepare() - everything
+    // downstream (most importantly the oversampler's internal per-stage
+    // buffers, see juce::dsp::Oversampling::initProcessing()) is sized from
+    // these and does not grow later, so process() clamps to them
+    // defensively (see process()'s doc comment and issue #13).
+    size_t preparedMaximumBlockSize = 0;
+    size_t preparedNumChannels = 0;
 
     // Runs at the host sample rate, before Drive/oversampling (see class
     // comment) - modulates the wet path's transport delay by a sum of two
