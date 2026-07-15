@@ -6,7 +6,7 @@
 
 Aureate is a tape/console saturation "glue" plugin for orchestral material - strings, brass, and layered/bussed tracks that need cohesion and a little analog warmth without sounding like a guitar pedal. It combines a 4x oversampled, character-selectable saturator (tanh-based tape, cubic-clip console, or exponential valve) with tape-transport artefacts (Wow/Flutter, Hiss) and a console-style tilt EQ plus independent HF/LF trim shelves.
 
-## Where it sits in a symphonic-metal chain
+## Where it sits in a heavy production chain
 
 Aureate is designed to run **after** the individual layers of an orchestral/choral stack have been balanced (strings, brass, choir, etc.), typically on:
 
