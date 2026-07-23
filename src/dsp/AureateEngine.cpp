@@ -1,5 +1,7 @@
 #include "AureateEngine.h"
 
+#include "RealtimeCoefficients.h"
+
 namespace
 {
     // Keeps a requested filter frequency safely below Nyquist regardless of
@@ -383,17 +385,32 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
     const auto combinedBias = juce::jlimit (-maxCombinedBias, maxCombinedBias, warmthBias + explicitBias);
     const auto hissGain = hissAmount * maxHissLinearGain;
 
-    *warmthLowPass.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (oversampledRate, warmthLowPassHz, filterQ);
-    *headBumpPeak.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-        oversampledRate, clampBelowNyquist (headBumpHz, oversampledRate), headBumpQ, juce::Decibels::decibelsToGain (headBumpDb));
-    *tiltLowShelf.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
-        oversampledRate, clampBelowNyquist (tiltLowShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (-tiltDb));
-    *tiltHighShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-        oversampledRate, clampBelowNyquist (tiltHighShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (tiltDb));
-    *hfTrimShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-        oversampledRate, clampBelowNyquist (hfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (hfTrimDb));
-    *lfTrimShelf.state = *juce::dsp::IIR::Coefficients<float>::makeLowShelf (
-        oversampledRate, clampBelowNyquist (lfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (lfTrimDb));
+    // Non-allocating coefficient update (issue #22): ArrayCoefficients::
+    // makeLowPass/makePeakFilter/makeLowShelf/makeHighShelf compute into a
+    // stack std::array, which aurt::applyBiquadCoefficients then writes
+    // into the already-allocated Coefficients storage primed by prepare()
+    // above - no heap traffic on the audio thread, unlike the
+    // IIR::Coefficients::make* calls this replaced (each of which `new`s a
+    // fresh ref-counted Coefficients object, including its own heap-backed
+    // Array, per call - up to 6 allocations/6 deallocations per
+    // processBlock() call before this fix).
+    aurt::applyBiquadCoefficients (*warmthLowPass.state,
+        juce::dsp::IIR::ArrayCoefficients<float>::makeLowPass (oversampledRate, warmthLowPassHz, filterQ));
+    aurt::applyBiquadCoefficients (*headBumpPeak.state,
+        juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter (
+            oversampledRate, clampBelowNyquist (headBumpHz, oversampledRate), headBumpQ, juce::Decibels::decibelsToGain (headBumpDb)));
+    aurt::applyBiquadCoefficients (*tiltLowShelf.state,
+        juce::dsp::IIR::ArrayCoefficients<float>::makeLowShelf (
+            oversampledRate, clampBelowNyquist (tiltLowShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (-tiltDb)));
+    aurt::applyBiquadCoefficients (*tiltHighShelf.state,
+        juce::dsp::IIR::ArrayCoefficients<float>::makeHighShelf (
+            oversampledRate, clampBelowNyquist (tiltHighShelfHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (tiltDb)));
+    aurt::applyBiquadCoefficients (*hfTrimShelf.state,
+        juce::dsp::IIR::ArrayCoefficients<float>::makeHighShelf (
+            oversampledRate, clampBelowNyquist (hfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (hfTrimDb)));
+    aurt::applyBiquadCoefficients (*lfTrimShelf.state,
+        juce::dsp::IIR::ArrayCoefficients<float>::makeLowShelf (
+            oversampledRate, clampBelowNyquist (lfTrimHz, oversampledRate), filterQ, juce::Decibels::decibelsToGain (lfTrimDb)));
     dryWetMixer.setWetMixProportion (wetMix);
 
     juce::dsp::ProcessContextReplacing<float> context (workingBlock);

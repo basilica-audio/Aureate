@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-23
+
+### Fixed
+
+- **RT-safety: per-block IIR coefficient allocation** (issue #22): `AureateEngine::process()`
+  recomputed the Warmth low-pass, LF head-bump peak, Tone tilt shelf pair, and HF/LF Trim
+  shelves' coefficients once per block via `juce::dsp::IIR::Coefficients<float>::makeLowPass`/
+  `makeHighShelf`/`makeLowShelf`/`makePeakFilter`, each of which heap-allocates a fresh
+  reference-counted `Coefficients` object internally - a genuine audio-thread allocation on
+  every `processBlock()` call, present since v0.1.0. Replaced with
+  `juce::dsp::IIR::ArrayCoefficients<float>::make*` (stack-only) writing directly into the
+  already-allocated filter state (`src/dsp/RealtimeCoefficients.h`, ported from sibling
+  `basilica-audio/overture`'s issue #12 fix). `hissShelf`'s fixed coefficients (computed once in
+  `prepare()`) were already correct and are unchanged. New `tests/AllocationTests.cpp` guards
+  this permanently (`operator new`-instrumented, see `tests/AllocationGuard.{h,cpp}`) at both the
+  `AureateEngine` and `AureateAudioProcessor` level; verified red (192 allocations across a
+  32-block sweep) against the pre-fix code before landing the fix.
+
 ## [0.2.0] - 2026-07-16
 
 A research-derived deep-dive rework of the saturation core, plus the suite's M2 preset system
