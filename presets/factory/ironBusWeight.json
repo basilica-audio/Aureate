@@ -1,0 +1,32 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.aureate",
+    "pluginVersion": "0.3.0",
+    "name": "Iron Bus Weight",
+    "category": "Bus",
+    "parameters": {
+        "character": 1,
+        "drive": 6.0,
+        "warmth": 35.0,
+        "bias": 0.0,
+        "tone": 0.0,
+        "hf_trim": 0.0,
+        "lf_trim": 0.0,
+        "wow": 0.0,
+        "flutter": 0.0,
+        "hiss": 0.0,
+        "mix": 100.0,
+        "output": -1.0,
+        "comp_enable": 1,
+        "comp_model": 0,
+        "comp_threshold": -4.0,
+        "comp_ratio": 1,
+        "comp_attack": 3,
+        "comp_release": 2,
+        "comp_makeup": 2.0,
+        "comp_sc_hpf": 100.0,
+        "iron": 65.0,
+        "quality": 1,
+        "auto_gain": 0
+    }
+}

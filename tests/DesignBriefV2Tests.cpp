@@ -1,4 +1,6 @@
 #include "dsp/AureateEngine.h"
+#include "dsp/GlueCompressor.h"
+#include "dsp/IronStage.h"
 #include "dsp/TapeSaturator.h"
 #include "TestHelpers.h"
 
@@ -358,4 +360,78 @@ TEST_CASE ("Design brief v2: at Warmth=100%, each Character model's ceiling asym
         CAPTURE (newBias, oldSharedMaxBias);
         CHECK (outputAtNewBias != Catch::Approx (outputAtOldSharedBias).margin (1.0e-4f));
     }
+}
+
+//==============================================================================
+// v0.3.0 voicing contract additions
+//==============================================================================
+TEST_CASE ("Design brief v0.3.0: the Iron stage's HD3-vs-frequency law is part of the voicing contract",
+           "[dsp][designbrief][iron]")
+{
+    // Restated here, in the file that holds this plugin's voicing contract,
+    // because it is a *claim about how the plugin sounds* and not only an
+    // implementation detail: at constant level, third-harmonic distortion
+    // must rise towards low frequencies at roughly 12 dB per octave. That is
+    // the published measured signature of a bus transformer, and it comes out
+    // of the flux-domain architecture for free (see IronStage.h) rather than
+    // being fitted. tests/IronStageTests.cpp measures it in detail; this row
+    // pins the contract.
+    constexpr double oversampledRate = 192000.0;
+    constexpr int analysisSize = 1 << 16;
+
+    auto measureThirdHarmonicDb = [&] (double frequencyHz)
+    {
+        IronStage stage;
+        stage.setAmount (1.0f);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = oversampledRate;
+        spec.maximumBlockSize = static_cast<juce::uint32> (analysisSize * 2);
+        spec.numChannels = 1;
+        stage.prepare (spec);
+
+        juce::AudioBuffer<float> buffer (1, analysisSize * 2);
+        auto* data = buffer.getWritePointer (0);
+
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+        {
+            const auto phase = juce::MathConstants<double>::twoPi * frequencyHz
+                                * static_cast<double> (sample) / oversampledRate;
+            data[sample] = 0.5f * static_cast<float> (std::sin (phase));
+        }
+
+        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            data[sample] = stage.processCoreSample (data[sample], 0);
+
+        const auto* measured = data + analysisSize;
+
+        const auto fundamental = TestHelpers::goertzelMagnitude (measured, analysisSize, oversampledRate, frequencyHz);
+        const auto third = TestHelpers::goertzelMagnitude (measured, analysisSize, oversampledRate, 3.0 * frequencyHz);
+
+        return 20.0 * std::log10 (std::max (1.0e-30, third / std::max (1.0e-30, fundamental)));
+    };
+
+    const auto binWidth = oversampledRate / static_cast<double> (analysisSize);
+    const auto low = std::round (40.0 / binWidth) * binWidth;
+    const auto high = std::round (160.0 / binWidth) * binWidth;
+
+    const auto atLow = measureThirdHarmonicDb (low);
+    const auto atHigh = measureThirdHarmonicDb (high);
+
+    const auto slopePerOctave = (atLow - atHigh) / 2.0;
+
+    INFO ("HD3 " << atLow << " dB at " << low << " Hz, " << atHigh << " dB at " << high
+          << " Hz - slope " << slopePerOctave << " dB/octave");
+
+    CHECK (atLow > atHigh);
+    CHECK (slopePerOctave >= 9.0);
+    CHECK (slopePerOctave <= 15.0);
+}
+
+TEST_CASE ("Design brief v0.3.0: the Glue section's threshold calibration is the documented -18 dBFS RMS point",
+           "[dsp][designbrief][glue]")
+{
+    // Documented in docs/manual.md and relied on by every factory preset that
+    // sets comp_threshold, so it is a contract rather than a constant.
+    CHECK (GlueCompressor::thresholdReferenceDbfsRms == -18.0f);
 }

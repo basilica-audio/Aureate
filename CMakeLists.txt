@@ -10,7 +10,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment ta
 # here at the top level avoids it being enabled implicitly deeper inside
 # JUCE's CMake helpers, which has been observed to break Ninja's generate
 # step (missing CMAKE_C_COMPILE_OBJECT rule variable).
-project(Aureate VERSION 0.2.1 LANGUAGES C CXX)
+project(Aureate VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -77,6 +77,9 @@ juce_add_binary_data(AureateBinaryData SOURCES
     presets/factory/parallelGritNewYork.json
     presets/factory/consoleSummingSheen.json
     presets/factory/airAndWeight.json
+    presets/factory/orchestralBusGlue.json
+    presets/factory/softTubeGlue.json
+    presets/factory/ironBusWeight.json
     resources/i18n/de.txt
 )
 
@@ -149,6 +152,14 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Aureate,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # Absolute path to tests/data, so binary test fixtures (currently the
+    # v0.2.1 reference render used by the v0.3.0 neutrality null, brief
+    # section 6 test 6.1c) can be located from the build directory without
+    # copying them around or depending on the working directory.
+    AUREATE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    # ...and to presets/factory, so the SHA-256 pinning test reads the same
+    # files juce_add_binary_data() embedded rather than a copy of them.
+    AUREATE_PRESET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/presets/factory"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)

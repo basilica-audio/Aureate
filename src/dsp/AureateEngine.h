@@ -2,6 +2,11 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include <array>
+
+#include "AdaaShapers.h"
+#include "GlueCompressor.h"
+#include "IronStage.h"
 #include "TapeSaturator.h"
 
 // The complete Aureate signal path, independent of juce::AudioProcessor so
@@ -14,12 +19,25 @@
 // full diagram and the research this v0.2.0 revision is grounded in):
 //
 //   input -> Wow/Flutter (independent wow/flutter rate+depth, modulated
-//            delay) -> Drive
+//            delay) -> Glue compressor (v0.3.0, host rate) -> Drive
 //         -> [4x oversampled: Warmth HF-rolloff (tape self-erasure) ->
 //            LF head-bump (tape transport resonance) -> saturator
-//            (Warmth+Bias, Character-selected model) -> tilt-style Tone ->
+//            (Warmth+Bias, Character-selected model, ADAA in HQ quality) ->
+//            Iron transformer stage (v0.3.0) -> tilt-style Tone ->
 //            HF/LF Trim -> Hiss (HF-forward shaped noise)]
-//         -> downsample -> Dry/Wet mix -> Output trim
+//         -> downsample -> Auto Gain (v0.3.0) -> Dry/Wet mix -> Output trim
+//
+// The three v0.3.0 stages all sit at neutral by default and are BRANCH-
+// SKIPPED there, not run at a transparent setting: the Glue section returns
+// before touching a sample when disabled, the Iron stage is stepped over
+// entirely at 0%, Classic quality still runs v0.2.1's own saturator loop, and
+// Auto Gain off applies no gain rather than a gain of 1.0f. That is what lets
+// an existing session be bit-identical rather than merely inaudibly close
+// (tests/EngineTests.cpp's in-process A/B null).
+//
+// The Glue section runs at the host rate and adds no latency, so
+// getLatencySamples() - and therefore the dry-path compensation and the
+// Mix-at-0% null - is unchanged from v0.2.1 at every new parameter setting.
 //
 // The Warmth HF-rolloff filter, the LF head-bump filter, the saturator, the
 // Tone tilt shelves, the HF/LF Trim shelves, and the Hiss noise stage
@@ -94,6 +112,70 @@ public:
     void setCharacter (TapeSaturator::Model newModel);
     void setHfTrimDb (float newTrimDb);
     void setLfTrimDb (float newTrimDb);
+
+    //==========================================================================
+    // v0.3.0 parameters. Every one of these is neutral at the value the
+    // ParameterLayout defaults to (see src/params/ParameterIds.h).
+    void setCompressorEnabled (bool shouldBeEnabled);
+    void setCompressorLaw (GlueCompressor::Law newLaw);
+    void setCompressorThresholdDb (float newThresholdDb);
+    void setCompressorRatioIndex (int newIndex);
+    void setCompressorAttackIndex (int newIndex);
+    void setCompressorReleaseIndex (int newIndex);
+    void setCompressorMakeupDb (float newMakeupDb);
+    void setCompressorSidechainHpfHz (float newCutoffHz);
+
+    void setIronProportion (float newProportion01);
+    void setHighQuality (bool shouldUseAdaa);
+    void setAutoGainEnabled (bool shouldCompensate);
+
+    // Current gain reduction in dB (positive = attenuating), for metering.
+    float getCurrentGrDb() const noexcept { return glueCompressor.getCurrentGrDb(); }
+
+    // TEST-ONLY. Forces every v0.3.0 stage out of circuit regardless of its
+    // parameter value, so tests/EngineTests.cpp can render the same programme
+    // twice through the SAME binary - once at the v0.3.0 defaults, once with
+    // the new stages provably skipped - and assert max abs diff == 0.
+    //
+    // A cross-platform bit-exact golden file could not do this job: std::tanh
+    // and std::exp are not bit-identical between Apple libm and the MSVC
+    // UCRT, so a pinned golden is green on at most one leg of the CI matrix.
+    // An in-process A/B is immune to both that and to codegen shifts from the
+    // Classic/HQ restructuring, because both renders run through the same
+    // compiled instructions.
+    void setNewStagesBypassedForTesting (bool shouldBypass) noexcept
+    {
+        newStagesBypassedForTesting = shouldBypass;
+    }
+
+    // The per-Character Drive compensation exponents used by Auto Gain,
+    // exposed so tests assert the shipped constants rather than a copy of
+    // them.
+    //
+    // Measured, not assumed: each was calibrated once against equal-RMS
+    // pink-noise renders at Drive 0 versus Drive 18 dB (tests/EngineTests.cpp
+    // test 6.17) and then frozen. The brief's starting values of 0.90 / 0.95 /
+    // 0.85 left residual errors of -2.08 / -0.63 / -1.82 dB, i.e. they
+    // over-compensated, because they did not account for how much of Drive's
+    // gain the saturator gives back on its own; the values below are those
+    // starting points corrected by the measured error.
+    //
+    // Honesty note (docs/manual.md): this is a listening/A-B aid, not
+    // loudness matching. It compensates Drive, on the wet path only, from a
+    // one-point calibration - it does not measure the signal.
+    static constexpr float autoGainBeta (TapeSaturator::Model model) noexcept
+    {
+        switch (model)
+        {
+            case TapeSaturator::Model::console:
+                return 0.915f;
+            case TapeSaturator::Model::valve:
+                return 0.749f;
+            case TapeSaturator::Model::tape:
+            default:
+                return 0.784f;
+        }
+    }
 
     // Total added latency in samples (oversampling + the Wow/Flutter stage's
     // fixed base delay), valid after prepare() has run. This is deliberately
@@ -252,8 +334,21 @@ private:
     double wowFlutterWowPhaseIncrement = 0.0;
     double wowFlutterFlutterPhaseIncrement = 0.0;
 
+    // v0.3.0 Glue section: host rate, ahead of Drive (console insert order).
+    // See GlueCompressor.h for why it is not oversampled and why that matters
+    // for getLatencySamples().
+    GlueCompressor glueCompressor;
+
     juce::dsp::Gain<float> driveGain;
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
+
+    // v0.3.0 Iron stage: inside the oversampled region, after the saturator.
+    IronStage ironStage;
+
+    // v0.3.0 HQ quality: one ADAA1 state per channel, living here rather than
+    // inside TapeSaturator so the Classic path's code is untouched.
+    static constexpr size_t maxOversampledChannels = 8;
+    std::array<AdaaShapers::Adaa1State, maxOversampledChannels> adaaStates {};
 
     // These all run inside the oversampled block (see class comment).
     juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> warmthLowPass;
@@ -308,6 +403,12 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> hfTrimDbSmoothed;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> lfTrimDbSmoothed;
 
+    // v0.3.0. Iron's amount is smoothed linearly (it drives both a gain-like
+    // quantity and two filter targets); Auto Gain's compensation is smoothed
+    // multiplicatively because it is a gain.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> ironAmountSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> autoGainSmoothed;
+
     // Last commanded values (ParameterLayout defaults until a setter is
     // called), re-applied to the smoothers on every prepare() so re-prepare
     // (sample-rate change, etc.) never resets a live parameter back to a
@@ -323,6 +424,18 @@ private:
     float lastLfTrimDb = 0.0f;
 
     TapeSaturator::Model character = TapeSaturator::Model::tape;
+
+    // v0.3.0 last-commanded values, re-applied on every prepare() for the same
+    // reason the v0.2.0 ones above are.
+    float lastIronProportion01 = 0.0f;
+    float lastDriveDb = 6.0f;
+    bool highQuality = false;
+    bool autoGainEnabled = false;
+    bool newStagesBypassedForTesting = false;
+
+    // Recomputes Auto Gain's target from the current Drive/Character, called
+    // from setDriveDb(), setCharacter(), setAutoGainEnabled() and prepare().
+    void updateAutoGainTarget();
 
     int latencySamples = 0;
 

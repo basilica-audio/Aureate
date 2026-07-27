@@ -1,0 +1,28 @@
+# Normalise line endings so a checkout is byte-identical on every platform.
+#
+# This is load-bearing, not cosmetic. The factory presets are pinned by SHA-256
+# (tests/PresetManagerTests.cpp, "6.16 The eleven pre-v0.3.0 factory presets are
+# byte-identical") because a factory preset becomes part of a user's saved work
+# the moment they load it. GitHub's Windows runners check out with
+# core.autocrlf=true, which rewrites every LF to CRLF and therefore changes the
+# hash of every preset - the pin then fails on Windows only, for a reason that
+# has nothing to do with the preset content.
+*               text=auto eol=lf
+
+# Binary assets must never be line-ending translated. The reference render is a
+# cross-version null golden; any byte translation would silently corrupt it.
+*.wav           binary
+*.aif           binary
+*.aiff          binary
+*.flac          binary
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.icns          binary
+*.pdf           binary
+*.zip           binary
+
+# Presets are hashed byte-for-byte - keep them explicitly LF.
+presets/**/*.json text eol=lf

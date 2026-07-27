@@ -1,8 +1,10 @@
 #include "PluginProcessor.h"
 #include "dsp/AureateEngine.h"
+#include "dsp/GlueCompressor.h"
 #include "params/ParameterIds.h"
 #include "TestHelpers.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 // Broadens coverage across the sample-rate range hosts commonly offer
@@ -147,5 +149,92 @@ TEST_CASE ("Sample-rate sweep: AureateAudioProcessor::prepareToPlay reports cons
 
         CHECK_NOTHROW (processor.processBlock (buffer, midi));
         CHECK (TestHelpers::allSamplesFinite (buffer));
+    }
+}
+
+//==============================================================================
+// 6.7 - the Vari-Mu timing network is sample-rate independent
+//==============================================================================
+TEST_CASE ("6.7 The Glue section's gain-reduction trace is the same in absolute time at every sample rate",
+           "[dsp][glue][samplerate][varimu]")
+{
+    // The three-capacitor network is discretised trapezoidally with its
+    // coefficients rebuilt per sample rate at prepare(), so a release that
+    // takes two seconds must take two seconds at 44.1 kHz and at 192 kHz
+    // alike. A network discretised naively (or one whose rates were baked in
+    // as per-sample coefficients) would drift by a factor of four across this
+    // sweep.
+    auto measureRecoverySeconds = [] (double sampleRate, GlueCompressor::Law law, int releaseIndex)
+    {
+        GlueCompressor compressor;
+        compressor.setEnabled (true);
+        compressor.setLaw (law);
+        compressor.setThresholdDb (0.0f);
+        compressor.setRatioIndex (1);
+        compressor.setAttackIndex (2);
+        compressor.setReleaseIndex (releaseIndex);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = sampleRate;
+        spec.maximumBlockSize = 1;
+        spec.numChannels = 2;
+        compressor.prepare (spec);
+
+        const auto amplitude = static_cast<float> (std::pow (10.0, (-18.0 + 15.0) / 20.0)
+                                                    * juce::MathConstants<double>::sqrt2);
+
+        const auto sustainSamples = static_cast<int> (2.0 * sampleRate);
+        const auto decaySamples = static_cast<int> (15.0 * sampleRate);
+
+        juce::AudioBuffer<float> buffer (2, 1);
+        float peak = 0.0f;
+
+        for (int sample = 0; sample < sustainSamples; ++sample)
+        {
+            const auto phase = juce::MathConstants<double>::twoPi * 1000.0
+                                * static_cast<double> (sample) / sampleRate;
+            const auto value = amplitude * static_cast<float> (std::sin (phase));
+
+            buffer.setSample (0, 0, value);
+            buffer.setSample (1, 0, value);
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            compressor.process (block);
+        }
+
+        peak = compressor.getCurrentGrDb();
+
+        for (int sample = 0; sample < decaySamples; ++sample)
+        {
+            buffer.setSample (0, 0, 0.0f);
+            buffer.setSample (1, 0, 0.0f);
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            compressor.process (block);
+
+            if (compressor.getCurrentGrDb() <= peak * 0.36788f)
+                return sample / sampleRate;
+        }
+
+        return -1.0;
+    };
+
+    for (const auto law : { GlueCompressor::Law::vca, GlueCompressor::Law::variMu })
+    {
+        for (const auto releaseIndex : { 1, 3 })
+        {
+            const auto reference = measureRecoverySeconds (48000.0, law, releaseIndex);
+            REQUIRE (reference > 0.0);
+
+            for (const auto sampleRate : { 44100.0, 96000.0, 192000.0 })
+            {
+                const auto measured = measureRecoverySeconds (sampleRate, law, releaseIndex);
+                REQUIRE (measured > 0.0);
+
+                INFO ("law " << static_cast<int> (law) << ", release position " << (releaseIndex + 1)
+                      << ": " << reference << " s at 48 kHz vs " << measured << " s at " << sampleRate << " Hz");
+                CHECK (measured == Catch::Approx (reference).epsilon (0.02));
+            }
+        }
     }
 }

@@ -1,0 +1,32 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.aureate",
+    "pluginVersion": "0.3.0",
+    "name": "Soft Tube Glue",
+    "category": "Bus",
+    "parameters": {
+        "character": 2,
+        "drive": 3.0,
+        "warmth": 30.0,
+        "bias": 0.0,
+        "tone": -6.0,
+        "hf_trim": 0.0,
+        "lf_trim": 0.0,
+        "wow": 0.0,
+        "flutter": 0.0,
+        "hiss": 0.0,
+        "mix": 100.0,
+        "output": 0.0,
+        "comp_enable": 1,
+        "comp_model": 1,
+        "comp_threshold": -10.0,
+        "comp_ratio": 0,
+        "comp_attack": 4,
+        "comp_release": 4,
+        "comp_makeup": 3.0,
+        "comp_sc_hpf": 60.0,
+        "iron": 0.0,
+        "quality": 1,
+        "auto_gain": 0
+    }
+}
