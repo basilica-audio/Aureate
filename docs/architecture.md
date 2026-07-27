@@ -5,16 +5,19 @@
 ```mermaid
 flowchart LR
     IN[Input] --> WF["Wow/Flutter<br/>independent wow+flutter<br/>modulated delay"]
-    WF --> DRIVE[Drive<br/>0-24 dB]
+    WF --> GLUE["Glue compressor (v0.3.0)<br/>VCA or Vari-Mu law<br/>host rate, zero latency"]
+    GLUE --> DRIVE[Drive<br/>0-24 dB]
     DRIVE --> UP[4x Oversample]
     UP --> WLP[Warmth<br/>HF rolloff]
     WLP --> BUMP[LF head bump<br/>tape transport resonance]
-    BUMP --> SAT[Saturator<br/>Character: Tape/Console/Valve<br/>Warmth+Bias asymmetry]
-    SAT --> TILT[Tone<br/>dual-shelf tilt]
+    BUMP --> SAT[Saturator<br/>Character: Tape/Console/Valve<br/>Warmth+Bias asymmetry<br/>ADAA in HQ quality]
+    SAT --> IRON["Iron (v0.3.0)<br/>flux integrator, core sat,<br/>matched differentiator"]
+    IRON --> TILT[Tone<br/>dual-shelf tilt]
     TILT --> TRIM[HF/LF Trim<br/>shelves]
     TRIM --> HISS[Hiss<br/>HF-shelved noise]
     HISS --> DOWN[4x Downsample]
-    DOWN --> MIX[Dry/Wet Mix]
+    DOWN --> AG["Auto Gain (v0.3.0)<br/>wet path only"]
+    AG --> MIX[Dry/Wet Mix]
     IN -.->|delay-compensated dry path| MIX
     MIX --> OUT[Output trim<br/>-24..+24 dB]
     OUT --> FINAL[Output]
@@ -22,13 +25,15 @@ flowchart LR
 
 Wow/Flutter through Drive run at the host sample rate; Warmth's HF-rolloff, the LF head bump, the saturator, Tone, HF/LF Trim, and Hiss (including its own dedicated HF-shelf shaping filter) all run *inside* the 4x oversampled block, owned by `AureateEngine` (`src/dsp/AureateEngine.{h,cpp}`) - the harmonics the saturator generates, the noise Hiss injects, and the filters shaping the signal around them are all processed and band-limited at 4x the host sample rate before a single downsample step. The dry path is the untouched input signal, delayed to stay time-aligned with the wet path (see [Latency and oversampling](#latency-and-oversampling) below), then blended in at the Mix stage via `juce::dsp::DryWetMixer`. Output is a final master trim applied *after* the mix, so - unlike Drive, which only affects the wet path - it scales the combined dry+wet signal as a whole.
 
+**v0.3.0 "Glue" revision** (see the binding v0.3.0 brief): a feedback bus compressor with two selectable detector laws was added at the host sample rate ahead of Drive, a flux-domain transformer stage inside the existing oversampled region after the saturator, a first-order-ADAA quality mode on the same three Character curves, and wet-path Drive compensation after the downsampler. The Glue section runs at 1x and the Iron stage reuses the existing 4x region precisely so that `getLatencySamples()` is unchanged - that number is also what the dry path is compensated by, so a stage that added latency would silently break the Mix-at-0% null for every existing session. All eleven new parameters are neutral by default and each neutral value is a branch-skip, which is what makes an upgrade bit-identical rather than merely inaudible.
+
 **v0.2.0 research-derived revision** (see `docs/design-brief.md` for the full brief and `docs/research-notes.md` for its sourced citations): the Character models' harmonic-balance ordering was corrected (Tape most odd-dominant, Valve most even-dominant, Console a soft/transparent-until-pushed knee replacing v0.1's hard-flat cubic clip), a new LF head-bump stage was added, Hiss's spectral tilt was corrected to read as HF-forward rather than darkened, and Wow/Flutter's single joint parameter was split into independent Wow and Flutter amounts. None of this is calibrated against measured hardware - see the brief's own Honesty section (§6).
 
 ## Module map
 
 | Directory | Responsibility |
 |---|---|
-| `src/dsp` | All audio-thread DSP: `TapeSaturator` (the stateless saturation nonlinearities - Tape's tanh curve, Console's scaled-tanh soft knee (v0.2.0, replacing v0.1's hard-flat cubic soft-clip), and Valve's exponential curve, selected by Character) and `AureateEngine` (the full signal chain: independent Wow/Flutter modulated delay, Drive gain, oversampling, Warmth low-pass + LF head-bump peak + saturator + Tone tilt shelves + HF/LF Trim shelves + Hiss noise (with its own HF-shelf shaping filter) inside the oversampled domain, dry/wet mix, Output gain). No allocation, locks, or I/O once `prepare()` has run. Independent of `juce::AudioProcessor` so it is directly unit-testable (see `tests/EngineTests.cpp`, `tests/EngineFeatureTests.cpp`, `tests/WowFlutterTests.cpp`, `tests/TapeSaturatorTests.cpp`, `tests/DesignBriefV2Tests.cpp`). |
+| `src/dsp` | All audio-thread DSP. v0.3.0 adds `GlueCompressor` (both detector laws, the shared feedback sidechain, the trapezoidally-discretised three-capacitor timing network and the triode-transconductance gain-cell table), `IronStage` (header-only: a backward-Euler leaky flux integrator, an ADAA saturating core and the exact one-zero FIR inverse of that integrator, plus a resonance bump and high cut carried in double-precision biquads because a 35 Hz corner at 4x the host rate has no significant digits left in single precision) and `AdaaShapers` (the closed-form antiderivatives of the three Character curves and the first-order ADAA wrapper - deliberately parallel to `TapeSaturator` rather than replacing it, so the Classic path is still literally the v0.2.1 code). Then, as before: `TapeSaturator` (the stateless saturation nonlinearities - Tape's tanh curve, Console's scaled-tanh soft knee (v0.2.0, replacing v0.1's hard-flat cubic soft-clip), and Valve's exponential curve, selected by Character) and `AureateEngine` (the full signal chain: independent Wow/Flutter modulated delay, Drive gain, oversampling, Warmth low-pass + LF head-bump peak + saturator + Tone tilt shelves + HF/LF Trim shelves + Hiss noise (with its own HF-shelf shaping filter) inside the oversampled domain, dry/wet mix, Output gain). No allocation, locks, or I/O once `prepare()` has run. Independent of `juce::AudioProcessor` so it is directly unit-testable (see `tests/EngineTests.cpp`, `tests/EngineFeatureTests.cpp`, `tests/WowFlutterTests.cpp`, `tests/TapeSaturatorTests.cpp`, `tests/DesignBriefV2Tests.cpp`). |
 | `src/params` | Parameter layout and `AudioProcessorValueTreeState` definitions - parameter IDs, ranges, defaults. Single source of truth for what a preset captures. |
 | `src/presets` | The M2 preset system (`.scaffold/specs/preset-system-m2.md`): `PresetManager` (factory/user preset discovery, load/save/import/export, dirty tracking, default resolution), `PresetBar` (the editor's preset strip), `Localisation` (the German i18n frame). Copy-paste-portable from sibling `basilica-audio/nave`'s pilot implementation - see that repo's `docs/preset-system-notes.md` for the replication recipe. |
 | `src/PluginProcessor.*` | Host plumbing: APVTS construction, `prepareToPlay`/`processBlock`/`reset`, latency reporting, state save/load (including the v0.1.0->v0.2.0 Wow/Flutter state migration), `PresetManager` construction/wiring. Reads APVTS values and pushes them into `AureateEngine` every block (via the shared `pushParametersToEngine()` helper, used by both `prepareToPlay()` and `processBlock()` so the two can never drift apart); does not implement any DSP itself. |

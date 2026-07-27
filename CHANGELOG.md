@@ -7,6 +7,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-27
+
+The "Glue" release: the program-dependent bus dynamics the plugin's name always implied,
+plus a transformer stage, an anti-aliased quality mode, and drive-compensated listening.
+
+Every one of the eleven new parameters is neutral at its default, and every neutral default
+is a **branch-skip rather than a transparent setting** - the Glue section returns before
+touching a sample when disabled, the Iron stage is stepped over at 0%, Classic quality still
+runs v0.2.1's own saturator loop, and Auto Gain off applies no gain rather than a gain of 1.0.
+An existing session therefore plays back **bit-identically**, and reported latency is unchanged
+at every setting and every sample rate.
+
+### Added
+
+- **Glue compressor section** (`src/dsp/GlueCompressor.{h,cpp}`), at the host sample rate ahead
+  of Drive, in console insert order and adding **zero latency**. One mono-summed sidechain and a
+  *feedback* detector tap - the detector sees the signal after the gain cell, one sample old -
+  which is what produces the soft emergent knee, the ratio-dependent effective attack and the
+  characteristic law, none of it curve-fitted. Two selectable laws:
+  - **VCA**: dB-domain timing network driven by a linear-domain overshoot test, with a
+    dual-time-constant Auto release whose slow reservoir is only ever charged by release-phase
+    ripple - so sustained programme fills it and a lone transient does not. Measured: ratio
+    asymptotes within 0.03 of 1/R at all three positions, exact transparency below threshold,
+    63% attack at tau/(1+k) (4.96 / 2.46 / 0.98 ms at the 10 ms position for 2:1 / 4:1 / 10:1),
+    fixed releases within 20% of their time constants, Auto recovering a 50 ms burst in 0.28 s
+    and 10 s of sustained gain reduction in 2.37 s (8.3x) with a monotonic tail.
+  - **Vari-Mu**: softplus dead-zone sidechain, current-limited rectifier and a trapezoidally-
+    discretised three-capacitor release network, into a gain cell derived from the analytic
+    transconductance of a Koren triode law. Measured: knee width above 6 dB at the low ratio
+    position, slope 0.07 above +15 dB at the high one, 37% recovery at 0.29 / 0.78 / 1.89 /
+    4.72 s across the four fixed positions, and Auto recovering 9.6x slower after sustained
+    programme than after a burst. The attack is a genuine slew: peak dGR/dt grows only 1.22x
+    when the step size doubles, against 2.00x for the VCA law's exponential.
+  - Shared: detector-only high-pass (20 Hz = hard bypass), static makeup, a 10 ms crossfade on
+    the section and a 30 ms crossfade on a law change with the incoming law's envelope
+    warm-started from the outgoing gain reduction.
+- **Iron stage** (`src/dsp/IronStage.h`), inside the existing 4x oversampled region after the
+  saturator: a leaky flux integrator, a saturating core with a deliberate asymmetry offset, and
+  the exact algebraic inverse of that integrator. Because flux is the integral of the signal,
+  third-harmonic distortion rises towards low frequencies at a measured 10.3 dB per octave -
+  the published bus-transformer signature, emergent rather than fitted. Plus a 35 Hz resonance
+  bump and gentle high-frequency rounding.
+- **HQ quality mode** (`src/dsp/AdaaShapers.h`): first-order antiderivative anti-aliasing on the
+  same three Character transfer functions, same oversampling factor, same reported latency, same
+  voicing. Measured 24 dB lower non-harmonic floor on every Character at 10 kHz / 0 dBFS /
+  24 dB Drive.
+- **Auto Gain**: wet-path Drive compensation with per-Character constants, calibrated against
+  equal-RMS pink-noise renders and frozen. Holds output within 1.5 dB from Drive 0 to 18 dB.
+- **Gain-reduction readout** in the editor, polled at 30 Hz. Not an APVTS parameter - it is a
+  measurement, and making it one would expose it to automation, undo and preset serialisation.
+- **Three factory presets**: Orchestral Bus Glue, Soft Tube Glue, Iron Bus Weight. The eleven
+  existing presets are byte-identical and now SHA-256 pinned in CI.
+- **State schema 3**: `getStateInformation()` stamps `stateSchema="3"`; an older state has every
+  schema-3 parameter injected at its own default on load, because `APVTS::replaceState()` leaves
+  parameters absent from the incoming tree at whatever the instance already held. Unknown newer
+  schemas load tolerantly.
+
+### Fixed
+
+- **Iron/ADAA numerical conditioning**, found by the new tests rather than in the field. The ADAA
+  difference quotient amplifies its antiderivative's rounding error by 1/delta; in single
+  precision that reached a few percent right at the guard threshold, which is an artefact at
+  every turning point of a low-frequency signal. Both the Iron core and the Character shapers now
+  evaluate the quotient in double. Separately, a 35 Hz biquad at 4x the host rate has no
+  significant digits left in single precision - measured, the "35 Hz" bump peaked nearer 32 Hz
+  and lost a third of its gain - so the Iron stage's two filters carry double coefficients and
+  double state.
+
+### Notes
+
+- The Iron stage's integrator/differentiator pair is **backward-Euler matched, not bilinear**.
+  The bilinear leaky one-pole has a zero at z = -1, so its exact inverse has an undamped pole at
+  Nyquist: a transient would park an oscillation that never decays and that rounding
+  random-walks. The backward-Euler pair's inverse is a pure one-zero FIR - unconditionally
+  stable, decaying to true zero, and an exact inverse of the integrator actually used.
+- Voicing is anchored to published circuit analysis and triode laws, not to measured hardware.
+  Every test asserts a behavioural invariant - knee softness, slew ordering, time-constant
+  ratios, the HD3 slope - and never a "sounds like" claim. See `docs/manual.md`.
+- Three assertions deviate from the brief's stated numbers, each documented at the site of the
+  call: the VCA attack is tau/(1+k) rather than tau*k/(1+k) (which would get slower with ratio,
+  contradicting the same section's own claim); the Vari-Mu slew is asserted as saturation of
+  peak dGR/dt rather than as a ratio of 90%-gain-reduction times, which a closed loop confounds;
+  and the absolute -80 dBFS alias floor is unreachable at the specified fixture with 4x
+  oversampling, where the oversampler's own half-band stopband sets the floor rather than the
+  shaper.
+
 ## [0.2.1] - 2026-07-23
 
 ### Fixed
