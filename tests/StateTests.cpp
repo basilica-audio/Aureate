@@ -194,3 +194,114 @@ TEST_CASE ("State migration: a v0.2.0-shaped state (already carrying wow/flutter
     CHECK (wowParam->convertFrom0to1 (wowParam->getValue()) == Catch::Approx (12.0f).margin (1.0e-3));
     CHECK (flutterParam->convertFrom0to1 (flutterParam->getValue()) == Catch::Approx (88.0f).margin (1.0e-3));
 }
+
+//==============================================================================
+// v0.3.0 neutrality / migration render-null (brief section 6, test 6.1).
+//
+// 6.1(a) lives here as a pure state test; 6.1(b) - the in-process bit-exact
+// A/B - lives in EngineTests.cpp where the engine's test-only bypass flag is
+// exercised directly; 6.1(c) is the cross-version tolerance null below.
+//
+// Why 6.1(c) is a tolerance null and not a bit-exact golden: std::tanh
+// (TapeSaturator), std::exp/std::sin (the wow/flutter LFOs and this file's
+// own fixture generator) are not bit-identical between Apple libm and the
+// MSVC UCRT, and FP contraction differs per compiler, so a pinned
+// max-abs-diff == 0 golden would be green on at most one leg of the
+// {macos-latest, windows-latest} CI matrix and would leave protected main
+// permanently red. Bit-identity is only ever asserted *within one binary*
+// (test 6.1b). See the brief's revision note 1.
+//==============================================================================
+
+#include "TestHelpers.h"
+
+#include <juce_audio_formats/juce_audio_formats.h>
+
+namespace
+{
+    constexpr double referenceRenderSampleRate = 48000.0;
+    constexpr int referenceRenderBlockSize = 512;
+    constexpr int referenceRenderNumSamples = 96000; // 2 s at 48 kHz
+    constexpr int referenceRenderNumChannels = 2;
+
+    juce::File referenceRenderFile()
+    {
+        return juce::File (AUREATE_TEST_DATA_DIR).getChildFile ("aureate-v0.2.1-default-render.wav");
+    }
+
+    // Renders the shared neutrality fixture through a default-state
+    // processor. `configure` gets a chance to touch parameters/engine flags
+    // before the render starts.
+    template <typename ConfigureFn>
+    juce::AudioBuffer<float> renderNeutralityFixture (ConfigureFn&& configure)
+    {
+        AureateAudioProcessor processor;
+        configure (processor);
+        processor.prepareToPlay (referenceRenderSampleRate, referenceRenderBlockSize);
+
+        juce::AudioBuffer<float> source (referenceRenderNumChannels, referenceRenderNumSamples);
+        TestHelpers::fillNeutralityFixture (source, referenceRenderSampleRate);
+
+        juce::AudioBuffer<float> rendered (referenceRenderNumChannels, referenceRenderNumSamples);
+        juce::MidiBuffer midi;
+
+        for (int start = 0; start < referenceRenderNumSamples; start += referenceRenderBlockSize)
+        {
+            const auto length = juce::jmin (referenceRenderBlockSize, referenceRenderNumSamples - start);
+
+            juce::AudioBuffer<float> block (referenceRenderNumChannels, length);
+            for (int channel = 0; channel < referenceRenderNumChannels; ++channel)
+                block.copyFrom (channel, 0, source, channel, start, length);
+
+            processor.processBlock (block, midi);
+
+            for (int channel = 0; channel < referenceRenderNumChannels; ++channel)
+                rendered.copyFrom (channel, start, block, channel, 0, length);
+        }
+
+        return rendered;
+    }
+
+    juce::AudioBuffer<float> renderDefaultState()
+    {
+        return renderNeutralityFixture ([] (AureateAudioProcessor&) {});
+    }
+}
+
+// Hidden by the leading '.' in its tag: this is a fixture *generator*, not an
+// assertion, and it writes into the source tree. It was run exactly once,
+// against the pristine v0.2.1 tree (CMakeLists project(Aureate VERSION
+// 0.2.1), before any v0.3.0 DSP existed), to produce
+// tests/data/aureate-v0.2.1-default-render.wav. It is deliberately NOT run
+// in CI - regenerating the reference from the current tree would make test
+// 6.1(c) self-fulfilling and worthless. Run manually with:
+//   ./build/Tests "[!benchmark][.fixture]"   (or: ./build/Tests --list-tests)
+TEST_CASE ("Fixture generator: write the v0.2.1 default-state reference render", "[.fixture]")
+{
+    const auto rendered = renderDefaultState();
+
+    auto file = referenceRenderFile();
+    file.getParentDirectory().createDirectory();
+    file.deleteFile();
+
+    juce::WavAudioFormat format;
+    std::unique_ptr<juce::OutputStream> stream (file.createOutputStream());
+    REQUIRE (stream != nullptr);
+
+    // 32-bit float (SampleFormat::floatingPoint, which for WavAudioFormat is
+    // only meaningful at 32 bits), so the reference carries the renderer's
+    // full precision and the -120 dBFS tolerance in 6.1(c) is measuring the
+    // DSP, not the fixture's own quantisation.
+    const auto options = juce::AudioFormatWriterOptions()
+                             .withSampleRate (referenceRenderSampleRate)
+                             .withNumChannels (referenceRenderNumChannels)
+                             .withBitsPerSample (32)
+                             .withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+
+    std::unique_ptr<juce::AudioFormatWriter> writer (format.createWriterFor (stream, options));
+    REQUIRE (writer != nullptr);
+
+    REQUIRE (writer->writeFromAudioSampleBuffer (rendered, 0, rendered.getNumSamples()));
+    writer.reset();
+
+    CHECK (file.existsAsFile());
+}

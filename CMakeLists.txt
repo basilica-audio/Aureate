@@ -149,6 +149,11 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Aureate,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # Absolute path to tests/data, so binary test fixtures (currently the
+    # v0.2.1 reference render used by the v0.3.0 neutrality null, brief
+    # section 6 test 6.1c) can be located from the build directory without
+    # copying them around or depending on the working directory.
+    AUREATE_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)

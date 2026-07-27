@@ -8,6 +8,68 @@
 // Small shared helpers used across the Tests target.
 namespace TestHelpers
 {
+    // The neutrality-null program fixture (brief section 6, test 6.1): a
+    // deterministic sine+noise signal, decorrelated between channels, used
+    // both by the in-process A/B null (6.1b) and by the cross-version
+    // tolerance null against the checked-in v0.2.1 reference render (6.1c).
+    //
+    // Deliberately built from an explicit LCG rather than juce::Random or
+    // std::mt19937: it must produce bit-identical samples on every platform
+    // and toolchain, forever, or the checked-in reference WAV stops meaning
+    // anything. The sine component uses std::sin, whose last-ULP behaviour
+    // *does* vary between Apple libm and the MSVC UCRT - which is exactly
+    // why 6.1c is specified at a -120 dBFS tolerance rather than as a
+    // bit-exact golden (see the brief's revision note 1).
+    inline void fillNeutralityFixture (juce::AudioBuffer<float>& buffer, double sampleRate)
+    {
+        constexpr double sineFrequencyHz = 220.0;
+        constexpr float sineAmplitude = 0.40f;
+        constexpr float noiseAmplitude = 0.05f;
+
+        for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
+        {
+            auto* data = buffer.getWritePointer (channel);
+
+            // Per-channel seed: the two channels must not be identical, or
+            // the fixture cannot exercise the compressor's shared-sidechain
+            // stereo behaviour later on.
+            juce::uint32 lcg = 0x9E3779B9u + static_cast<juce::uint32> (channel) * 0x85EBCA6Bu;
+
+            for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+            {
+                lcg = lcg * 1664525u + 1013904223u;
+                const auto noise = static_cast<float> (static_cast<double> (lcg >> 8) / 8388608.0 - 1.0);
+
+                const auto phase = juce::MathConstants<double>::twoPi * sineFrequencyHz
+                                    * static_cast<double> (sample) / sampleRate;
+
+                data[sample] = sineAmplitude * static_cast<float> (std::sin (phase))
+                                + noiseAmplitude * noise;
+            }
+        }
+    }
+
+    // Largest absolute per-sample difference between two identically-shaped
+    // buffers - the measure both halves of test 6.1 are specified in.
+    inline float maxAbsoluteDifference (const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+    {
+        const auto numChannels = juce::jmin (a.getNumChannels(), b.getNumChannels());
+        const auto numSamples = juce::jmin (a.getNumSamples(), b.getNumSamples());
+
+        float worst = 0.0f;
+
+        for (int channel = 0; channel < numChannels; ++channel)
+        {
+            const auto* da = a.getReadPointer (channel);
+            const auto* db = b.getReadPointer (channel);
+
+            for (int sample = 0; sample < numSamples; ++sample)
+                worst = std::max (worst, std::abs (da[sample] - db[sample]));
+        }
+
+        return worst;
+    }
+
     // Fills every channel of the buffer with a sine wave of the given
     // frequency. `startSampleIndex` offsets the phase calculation, so
     // calling this for consecutive blocks with startSampleIndex incremented
