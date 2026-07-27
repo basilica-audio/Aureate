@@ -2,6 +2,7 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -91,10 +92,15 @@ public:
     //==========================================================================
     // The switch positions, exposed as pure functions so tests assert the
     // shipped constants rather than a copy of them.
+    //
+    // Index clamping uses std::clamp, not juce::jlimit: jlimit is not declared
+    // constexpr in JUCE 8.0.14, so calling it here makes these functions
+    // impossible to constant-evaluate. MSVC diagnoses that as C3615; Clang
+    // accepts it silently (it is ill-formed, no diagnostic required).
     static constexpr float ratioValue (int index) noexcept
     {
         constexpr float values[numRatios] = { 2.0f, 4.0f, 10.0f };
-        return values[juce::jlimit (0, numRatios - 1, index)];
+        return values[std::clamp (index, 0, numRatios - 1)];
     }
 
     // The feedback ratio law: k = R - 1 (2:1 -> 1, 4:1 -> 3, 10:1 -> 9). The
@@ -106,7 +112,7 @@ public:
     static constexpr float attackTauSeconds (int index) noexcept
     {
         constexpr float values[numAttacks] = { 0.0001f, 0.0003f, 0.001f, 0.003f, 0.010f, 0.030f };
-        return values[juce::jlimit (0, numAttacks - 1, index)];
+        return values[std::clamp (index, 0, numAttacks - 1)];
     }
 
     // The four fixed release positions' nominal switch markings. The Vari-Mu
@@ -116,7 +122,7 @@ public:
     static constexpr float releaseTauSeconds (int index) noexcept
     {
         constexpr float values[numReleases - 1] = { 0.1f, 0.3f, 0.6f, 1.2f };
-        return values[juce::jlimit (0, numReleases - 2, index)];
+        return values[std::clamp (index, 0, numReleases - 2)];
     }
 
     //==========================================================================

@@ -1155,6 +1155,19 @@ TEST_CASE ("The fast dB conversions stay inside their documented accuracy budget
     CHECK (worstExpError < 0.01);
 }
 
+// The switch-position accessors must be genuinely constant-evaluable, not just
+// marked constexpr. Calling a non-constexpr helper (juce::jlimit is one - it is
+// not declared constexpr in JUCE 8.0.14) makes them ill-formed with no
+// diagnostic required, so Clang builds silently while MSVC fails with C3615.
+// These static_asserts force the constant evaluation on every toolchain.
+static_assert (GlueCompressor::ratioValue (0) == 2.0f);
+static_assert (GlueCompressor::ratioValue (2) == 10.0f);
+static_assert (GlueCompressor::ratioK (2) == 9.0f);
+static_assert (GlueCompressor::attackTauSeconds (0) == 0.0001f);
+static_assert (GlueCompressor::attackTauSeconds (5) == 0.030f);
+static_assert (GlueCompressor::releaseTauSeconds (0) == 0.1f);
+static_assert (GlueCompressor::releaseTauSeconds (3) == 1.2f);
+
 TEST_CASE ("The switch positions match the documented values exactly", "[dsp][glue][params]")
 {
     CHECK (GlueCompressor::ratioValue (0) == 2.0f);
