@@ -47,38 +47,38 @@ namespace AdaaShapers
         // overflows for |v| > ~89 in float and is exactly the regime a
         // 24 dB Drive pushes the saturator into):
         //     ln cosh(v) = |v| + ln(1 + e^(-2|v|)) - ln 2
-        inline float logCosh (float v) noexcept
+        inline double logCosh (double v) noexcept
         {
             const auto absolute = std::abs (v);
-            return absolute + std::log1p (std::exp (-2.0f * absolute)) - 0.6931471806f;
+            return absolute + std::log1p (std::exp (-2.0 * absolute)) - 0.69314718055994531;
         }
 
         // Antiderivatives of the three *un-biased* base curves. Any additive
         // constant cancels in the ADAA difference, so none is carried.
-        inline float tapeAntiderivative (float v) noexcept
+        inline double tapeAntiderivative (double v) noexcept
         {
             return logCosh (v);
         }
 
-        inline float consoleAntiderivative (float v) noexcept
+        inline double consoleAntiderivative (double v) noexcept
         {
             // d/dv [ 4 * ln cosh(v/2) ] = 2 tanh(v/2), which is exactly
             // TapeSaturator::detail::consoleSoftKnee with its scale of 2.
-            constexpr float scale = TapeSaturator::detail::consoleSoftKneeScale;
+            constexpr double scale = TapeSaturator::detail::consoleSoftKneeScale;
             return scale * scale * logCosh (v / scale);
         }
 
-        inline float valveAntiderivative (float v) noexcept
+        inline double valveAntiderivative (double v) noexcept
         {
             // d/dv [ |v| + e^(-|v|) - 1 ] = sign(v) * (1 - e^(-|v|)) on both
             // branches (for v > 0: 1 - e^(-v); for v < 0: -1 + e^(v)), so the
             // form is valid across zero without a special case - verified
             // numerically in tests/AdaaAliasingTests.cpp.
             const auto absolute = std::abs (v);
-            return absolute + std::exp (-absolute) - 1.0f;
+            return absolute + std::exp (-absolute) - 1.0;
         }
 
-        inline float baseAntiderivative (float v, TapeSaturator::Model model) noexcept
+        inline double baseAntiderivative (double v, TapeSaturator::Model model) noexcept
         {
             switch (model)
             {
@@ -92,14 +92,21 @@ namespace AdaaShapers
             }
         }
 
-        inline float baseCurve (float v, TapeSaturator::Model model) noexcept
+        // The double-precision twins of TapeSaturator's three curves. They
+        // exist so the ADAA arithmetic below can be done in double while the
+        // Classic path keeps calling TapeSaturator's own float functions,
+        // untouched.
+        inline double baseCurve (double v, TapeSaturator::Model model) noexcept
         {
             switch (model)
             {
                 case TapeSaturator::Model::console:
-                    return TapeSaturator::detail::consoleSoftKnee (v);
+                {
+                    constexpr double scale = TapeSaturator::detail::consoleSoftKneeScale;
+                    return scale * std::tanh (v / scale);
+                }
                 case TapeSaturator::Model::valve:
-                    return TapeSaturator::detail::exponentialSoftClip (v);
+                    return std::copysign (1.0 - std::exp (-std::abs (v)), v);
                 case TapeSaturator::Model::tape:
                 default:
                     return std::tanh (v);
@@ -112,13 +119,15 @@ namespace AdaaShapers
     //     f(x) = base(x + bias) - base(bias)
     inline float shape (float x, float bias, TapeSaturator::Model model) noexcept
     {
-        return detail::baseCurve (x + bias, model) - detail::baseCurve (bias, model);
+        const auto b = static_cast<double> (bias);
+        return static_cast<float> (detail::baseCurve (static_cast<double> (x) + b, model)
+                                    - detail::baseCurve (b, model));
     }
 
     // Its antiderivative. The bias is handled the way the brief specifies -
     // f(x+b) - f(b) integrates to F(x+b) - f(b)*x - so the recentring that
     // guarantees silence-in/silence-out survives into the ADAA path unchanged.
-    inline float antiderivative (float x, float bias, TapeSaturator::Model model) noexcept
+    inline double antiderivative (double x, double bias, TapeSaturator::Model model) noexcept
     {
         return detail::baseAntiderivative (x + bias, model)
                 - detail::baseCurve (bias, model) * x;
@@ -158,6 +167,19 @@ namespace AdaaShapers
         if (std::abs (delta) < minimumDelta)
             return shape (0.5f * (x + previous), bias, model);
 
-        return (antiderivative (x, bias, model) - antiderivative (previous, bias, model)) / delta;
+        // Evaluated in double. The difference quotient divides the difference
+        // of two antiderivative values by delta, so it amplifies their
+        // absolute rounding error by 1/delta: in single precision, with F
+        // reaching magnitudes around 9 and delta allowed down to 1e-5, that
+        // is a relative error of a few percent right at the guard threshold -
+        // measured as a 0.027 discrepancy against the Classic path on a
+        // slowly-varying probe, which is an audible artefact at every turning
+        // point of a low-frequency signal, not a rounding detail. In double
+        // the same quotient is accurate to about 1e-11.
+        const auto b = static_cast<double> (bias);
+
+        return static_cast<float> ((antiderivative (static_cast<double> (x), b, model)
+                                     - antiderivative (static_cast<double> (previous), b, model))
+                                    / static_cast<double> (delta));
     }
 }
