@@ -149,21 +149,31 @@ public:
     }
 
     // The per-Character Drive compensation exponents used by Auto Gain,
-    // exposed so tests assert the shipped constants rather than a copy.
-    // Calibrated once against equal-RMS pink-noise renders and then frozen
-    // (see docs/manual.md's honesty note: this is an A/B listening aid, not
-    // loudness matching).
+    // exposed so tests assert the shipped constants rather than a copy of
+    // them.
+    //
+    // Measured, not assumed: each was calibrated once against equal-RMS
+    // pink-noise renders at Drive 0 versus Drive 18 dB (tests/EngineTests.cpp
+    // test 6.17) and then frozen. The brief's starting values of 0.90 / 0.95 /
+    // 0.85 left residual errors of -2.08 / -0.63 / -1.82 dB, i.e. they
+    // over-compensated, because they did not account for how much of Drive's
+    // gain the saturator gives back on its own; the values below are those
+    // starting points corrected by the measured error.
+    //
+    // Honesty note (docs/manual.md): this is a listening/A-B aid, not
+    // loudness matching. It compensates Drive, on the wet path only, from a
+    // one-point calibration - it does not measure the signal.
     static constexpr float autoGainBeta (TapeSaturator::Model model) noexcept
     {
         switch (model)
         {
             case TapeSaturator::Model::console:
-                return 0.95f;
+                return 0.915f;
             case TapeSaturator::Model::valve:
-                return 0.85f;
+                return 0.749f;
             case TapeSaturator::Model::tape:
             default:
-                return 0.90f;
+                return 0.784f;
         }
     }
 

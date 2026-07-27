@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "dsp/GlueCompressor.h"
 #include "params/ParameterIds.h"
 
 #include <catch2/catch_approx.hpp>
@@ -59,6 +60,10 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
             ParamIDs::drive, ParamIDs::warmth, ParamIDs::tone, ParamIDs::mix, ParamIDs::output,
             ParamIDs::bias, ParamIDs::wow, ParamIDs::flutter, ParamIDs::hiss, ParamIDs::character,
             ParamIDs::hfTrim, ParamIDs::lfTrim,
+            // v0.3.0
+            ParamIDs::compEnable, ParamIDs::compModel, ParamIDs::compThreshold, ParamIDs::compRatio,
+            ParamIDs::compAttack, ParamIDs::compRelease, ParamIDs::compMakeup, ParamIDs::compScHpf,
+            ParamIDs::iron, ParamIDs::quality, ParamIDs::autoGain,
         };
 
         for (const auto* id : allIds)
@@ -74,11 +79,112 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
         CHECK (apvts.getParameter (ParamIDs::legacyWowFlutter) == nullptr);
     }
 
-    SECTION ("total parameter count matches the v0.2.0 layout")
+    SECTION ("total parameter count matches the v0.3.0 layout")
     {
         // v0.1.0's 11 parameters, minus the single wow_flutter, plus the two
-        // independent wow/flutter parameters that replaced it: 11 - 1 + 2 = 12.
-        CHECK (apvts.processor.getParameters().size() == 12);
+        // independent wow/flutter parameters that replaced it (11 - 1 + 2 =
+        // 12), plus v0.3.0's eleven Glue/Iron/Quality/Auto Gain additions.
+        CHECK (apvts.processor.getParameters().size() == 23);
+    }
+
+    SECTION ("v0.3.0: the eleven new parameters are appended AFTER the twelve frozen ones")
+    {
+        // Order matters beyond tidiness: several hosts persist automation
+        // lanes by parameter index rather than by ID, so inserting anywhere
+        // but at the end would silently repoint a saved session's automation
+        // at a different control.
+        const auto& parameters = apvts.processor.getParameters();
+        REQUIRE (parameters.size() == 23);
+
+        static constexpr const char* expectedOrder[] = {
+            ParamIDs::drive, ParamIDs::warmth, ParamIDs::tone, ParamIDs::mix, ParamIDs::output,
+            ParamIDs::bias, ParamIDs::wow, ParamIDs::flutter, ParamIDs::hiss, ParamIDs::character,
+            ParamIDs::hfTrim, ParamIDs::lfTrim,
+            ParamIDs::compEnable, ParamIDs::compModel, ParamIDs::compThreshold, ParamIDs::compRatio,
+            ParamIDs::compAttack, ParamIDs::compRelease, ParamIDs::compMakeup, ParamIDs::compScHpf,
+            ParamIDs::iron, ParamIDs::quality, ParamIDs::autoGain,
+        };
+
+        for (int index = 0; index < 23; ++index)
+        {
+            auto* parameter = dynamic_cast<juce::RangedAudioParameter*> (parameters[index]);
+            REQUIRE (parameter != nullptr);
+            INFO ("parameter index " << index);
+            CHECK (parameter->paramID == juce::String (expectedOrder[index]));
+        }
+    }
+
+    SECTION ("v0.3.0: every new parameter is neutral at its default")
+    {
+        // The entire release rests on this: a session that has never touched
+        // any of these must play back through the same code path v0.2.1 used.
+        // Asserted here as parameter values, and as an actual bit-exact render
+        // in tests/EngineTests.cpp.
+        // getDefaultValue() is public on RangedAudioParameter but private on
+        // the concrete AudioParameterBool/Choice subclasses, so the defaults
+        // are read through the base pointer.
+        CHECK (requireParam (apvts, ParamIDs::compEnable)->getDefaultValue() == 0.0f);
+        CHECK (requireParam (apvts, ParamIDs::autoGain)->getDefaultValue() == 0.0f);
+
+        auto* qualityParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::quality));
+        REQUIRE (qualityParam != nullptr);
+        CHECK (qualityParam->choices[0] == juce::String ("Classic"));
+        CHECK (requireParam (apvts, ParamIDs::quality)->getDefaultValue() == 0.0f); // Classic
+
+        // iron 0% and comp_sc_hpf 20 Hz are both hard bypasses, not merely
+        // small values (see IronStage.h and GlueCompressor::process).
+        checkFloatDefault (apvts, ParamIDs::iron, 0.0f);
+        checkFloatDefault (apvts, ParamIDs::compScHpf, 20.0f);
+        checkFloatDefault (apvts, ParamIDs::compMakeup, 0.0f);
+        checkFloatDefault (apvts, ParamIDs::compThreshold, 0.0f);
+    }
+
+    SECTION ("v0.3.0: ranges and choice lists")
+    {
+        checkFloatRange (apvts, ParamIDs::compThreshold, -30.0f, 10.0f);
+        checkFloatRange (apvts, ParamIDs::compMakeup, 0.0f, 12.0f);
+        checkFloatRange (apvts, ParamIDs::compScHpf, 20.0f, 500.0f);
+        checkFloatRange (apvts, ParamIDs::iron, 0.0f, 100.0f);
+
+        auto* modelParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::compModel));
+        REQUIRE (modelParam != nullptr);
+        CHECK (modelParam->choices.size() == 2);
+        CHECK (requireParam (apvts, ParamIDs::compModel)->getDefaultValue() == 0.0f); // VCA
+
+        auto* ratioParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::compRatio));
+        REQUIRE (ratioParam != nullptr);
+        CHECK (ratioParam->choices == juce::StringArray { "2:1", "4:1", "10:1" });
+
+        auto* attackParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::compAttack));
+        REQUIRE (attackParam != nullptr);
+        CHECK (attackParam->choices.size() == GlueCompressor::numAttacks);
+        CHECK (attackParam->getIndex() == 4); // 10 ms
+
+        auto* releaseParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (ParamIDs::compRelease));
+        REQUIRE (releaseParam != nullptr);
+        CHECK (releaseParam->choices.size() == GlueCompressor::numReleases);
+        CHECK (releaseParam->choices[GlueCompressor::autoReleaseIndex] == juce::String ("Auto"));
+        CHECK (releaseParam->getIndex() == GlueCompressor::autoReleaseIndex);
+    }
+
+    SECTION ("v0.3.0: the new IDs carry version hint 1, like every ID before them")
+    {
+        // juce::ParameterID{id, 1} is what keeps the VST3 parameter hashes
+        // stable; a different hint would give the same ID a different hash
+        // and break automation for anyone who upgrades.
+        static constexpr const char* newIds[] = {
+            ParamIDs::compEnable, ParamIDs::compModel, ParamIDs::compThreshold, ParamIDs::compRatio,
+            ParamIDs::compAttack, ParamIDs::compRelease, ParamIDs::compMakeup, ParamIDs::compScHpf,
+            ParamIDs::iron, ParamIDs::quality, ParamIDs::autoGain,
+        };
+
+        for (const auto* id : newIds)
+        {
+            auto* parameter = dynamic_cast<juce::RangedAudioParameter*> (apvts.getParameter (id));
+            REQUIRE (parameter != nullptr);
+            INFO ("parameter " << id);
+            CHECK (parameter->getVersionHint() == 1);
+        }
     }
 
     SECTION ("Drive: saturator input gain defaults and range")
