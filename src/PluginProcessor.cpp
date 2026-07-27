@@ -51,6 +51,12 @@ namespace
             { BinaryData::parallelGritNewYork_json, BinaryData::parallelGritNewYork_jsonSize },
             { BinaryData::consoleSummingSheen_json, BinaryData::consoleSummingSheen_jsonSize },
             { BinaryData::airAndWeight_json, BinaryData::airAndWeight_jsonSize },
+            // v0.3.0: three presets showcasing the Glue section and the Iron
+            // stage. Registered additively - the eleven above are unchanged,
+            // byte for byte (pinned by SHA-256 in tests/PresetManagerTests.cpp).
+            { BinaryData::orchestralBusGlue_json, BinaryData::orchestralBusGlue_jsonSize },
+            { BinaryData::softTubeGlue_json, BinaryData::softTubeGlue_jsonSize },
+            { BinaryData::ironBusWeight_json, BinaryData::ironBusWeight_jsonSize },
         };
     }
 

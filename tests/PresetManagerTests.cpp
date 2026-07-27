@@ -591,3 +591,200 @@ TEST_CASE ("PresetManager: parameter-driven dirty tracking coexists safely with 
 
     CHECK (manager.isDirty());
 }
+
+//==============================================================================
+// 6.16 - preset pinning and the three v0.3.0 additions
+//==============================================================================
+namespace
+{
+    // A compact SHA-256, rather than juce::SHA256: that class lives in
+    // juce_cryptography, and pulling an entire JUCE module into the plugin's
+    // link line so that one test can hash eleven small files would be a poor
+    // trade. This is the FIPS 180-4 reference algorithm, ~40 lines, used only
+    // here.
+    juce::String sha256Hex (const void* data, size_t numBytes)
+    {
+        static constexpr juce::uint32 k[64] = {
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+        };
+
+        juce::uint32 h[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                              0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+
+        std::vector<juce::uint8> message (static_cast<const juce::uint8*> (data),
+                                          static_cast<const juce::uint8*> (data) + numBytes);
+
+        const auto bitLength = static_cast<juce::uint64> (numBytes) * 8;
+        message.push_back (0x80);
+
+        while (message.size() % 64 != 56)
+            message.push_back (0x00);
+
+        for (int shift = 56; shift >= 0; shift -= 8)
+            message.push_back (static_cast<juce::uint8> ((bitLength >> shift) & 0xff));
+
+        auto rotateRight = [] (juce::uint32 value, int amount) { return (value >> amount) | (value << (32 - amount)); };
+
+        for (size_t chunk = 0; chunk < message.size(); chunk += 64)
+        {
+            juce::uint32 w[64] {};
+
+            for (int i = 0; i < 16; ++i)
+                w[i] = (static_cast<juce::uint32> (message[chunk + static_cast<size_t> (i) * 4 + 0]) << 24)
+                     | (static_cast<juce::uint32> (message[chunk + static_cast<size_t> (i) * 4 + 1]) << 16)
+                     | (static_cast<juce::uint32> (message[chunk + static_cast<size_t> (i) * 4 + 2]) << 8)
+                     | (static_cast<juce::uint32> (message[chunk + static_cast<size_t> (i) * 4 + 3]));
+
+            for (int i = 16; i < 64; ++i)
+            {
+                const auto s0 = rotateRight (w[i - 15], 7) ^ rotateRight (w[i - 15], 18) ^ (w[i - 15] >> 3);
+                const auto s1 = rotateRight (w[i - 2], 17) ^ rotateRight (w[i - 2], 19) ^ (w[i - 2] >> 10);
+                w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+            }
+
+            auto a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+
+            for (int i = 0; i < 64; ++i)
+            {
+                const auto s1 = rotateRight (e, 6) ^ rotateRight (e, 11) ^ rotateRight (e, 25);
+                const auto ch = (e & f) ^ (~e & g);
+                const auto temp1 = hh + s1 + ch + k[i] + w[i];
+                const auto s0 = rotateRight (a, 2) ^ rotateRight (a, 13) ^ rotateRight (a, 22);
+                const auto maj = (a & b) ^ (a & c) ^ (b & c);
+                const auto temp2 = s0 + maj;
+
+                hh = g; g = f; f = e; e = d + temp1;
+                d = c; c = b; b = a; a = temp1 + temp2;
+            }
+
+            h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+            h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+        }
+
+        juce::String hex;
+
+        for (const auto word : h)
+            hex << juce::String::toHexString (static_cast<int> (word)).paddedLeft ('0', 8);
+
+        return hex;
+    }
+}
+
+TEST_CASE ("6.16 The eleven pre-v0.3.0 factory presets are byte-identical", "[presets][pinning]")
+{
+    // SHA-256 pinning, not a "loads without error" check: a factory preset is
+    // part of a user's saved sessions the moment they load it, so an
+    // accidental reformat, a re-ordered key or a single changed value is a
+    // silent change to work someone else has already done. Anything that
+    // genuinely needs to change gets a NEW preset file and a CHANGELOG entry.
+    struct PinnedPreset
+    {
+        const char* fileName;
+        const char* sha256;
+    };
+
+    const PinnedPreset pinned[] = {
+        { "airAndWeight.json",             "ae5b611290e7adcd879eb511d134d78437ab7c0de106f36d9a40f25a7fb81890" },
+        { "brassBloom.json",               "b9bd1aa889abc27c37f22c0c9cd178463e35064f2309e17b932b8f18b0e33c37" },
+        { "choirWarmth.json",              "a1c93121e3adc1aa8cb6d89a83e07362200dfa1cb714356bcb04a8e75478f03c" },
+        { "consoleSummingSheen.json",      "a1254d7dba881518d72356c1c2b77b224bb3cba6ed32bc988a08c429acdc03e1" },
+        { "default.json",                  "e75302307acaecd0150e6a236e3c7f686c536565c3d486cf3970fed2b41cdc79" },
+        { "masterGlueSubtle.json",         "9ab26a6a679f546ccbf8c826f4b0255deaecfe6275799704500269a811951c81" },
+        { "orchestralSubmixCohesion.json", "e0f0c8f5772906be06b8baed4378a6d1bf6eb9c68539fbf0ce032c7847b9b996" },
+        { "parallelGritNewYork.json",      "37f75323b04c5a46ddf9665c731fbd58a7e5b6ebf312f7c1bc27414c65935f2a" },
+        { "stringSectionGlue.json",        "e9b74e47d6620049c4170f2da3229c797019792332d7ed6972e6a8c5635af296" },
+        { "valvePush.json",                "8aa8cd7c08f14b11a73025064eb57842ca7213d0790a6301f42d83dd3320222c" },
+        { "vintageTapePad.json",           "b5eb1c881597ce77c43efc31c0b12e20330003c655916ea655b6ee2614e33767" },
+    };
+
+    const auto factoryDirectory = juce::File (AUREATE_PRESET_DIR);
+    REQUIRE (factoryDirectory.isDirectory());
+
+    for (const auto& preset : pinned)
+    {
+        const auto file = factoryDirectory.getChildFile (preset.fileName);
+        INFO ("preset " << preset.fileName);
+        REQUIRE (file.existsAsFile());
+
+        juce::MemoryBlock contents;
+        REQUIRE (file.loadFileAsData (contents));
+
+        CHECK (sha256Hex (contents.getData(), contents.getSize()) == juce::String (preset.sha256));
+    }
+}
+
+TEST_CASE ("6.16 The three v0.3.0 presets load, appear in the bar, and engage the new section", "[presets]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    const auto presets = processor.presetManager.getAllPresets();
+
+    auto contains = [&presets] (const juce::String& name)
+    {
+        return std::any_of (presets.begin(), presets.end(),
+                            [&name] (const auto& entry) { return entry.name == name; });
+    };
+
+    CHECK (contains ("Orchestral Bus Glue"));
+    CHECK (contains ("Soft Tube Glue"));
+    CHECK (contains ("Iron Bus Weight"));
+
+    // Every one of them must actually turn the Glue section on - a preset
+    // that showcases a feature it leaves disabled is a documentation bug with
+    // a JSON extension.
+    for (const auto& name : { "Orchestral Bus Glue", "Soft Tube Glue", "Iron Bus Weight" })
+    {
+        INFO ("preset " << name);
+        REQUIRE (processor.presetManager.loadPreset (name));
+
+        auto* enableParam = processor.apvts.getParameter (ParamIDs::compEnable);
+        REQUIRE (enableParam != nullptr);
+        CHECK (enableParam->getValue() > 0.5f);
+    }
+
+    // "Iron Bus Weight" is the one that is supposed to bring the transformer
+    // stage in.
+    REQUIRE (processor.presetManager.loadPreset ("Iron Bus Weight"));
+    auto* ironParam = processor.apvts.getParameter (ParamIDs::iron);
+    REQUIRE (ironParam != nullptr);
+    CHECK (ironParam->convertFrom0to1 (ironParam->getValue()) > 50.0f);
+}
+
+TEST_CASE ("6.16 Loading a pre-v0.3.0 factory preset leaves every new parameter at its default", "[presets][neutrality]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    // Engage everything first, so a preset that simply failed to touch the
+    // new parameters would be caught rather than passing by default.
+    REQUIRE (processor.presetManager.loadPreset ("Iron Bus Weight"));
+
+    auto* ironParam = processor.apvts.getParameter (ParamIDs::iron);
+    REQUIRE (ironParam != nullptr);
+    REQUIRE (ironParam->getValue() > 0.0f);
+
+    // ...then load one of the eleven, which carries no schema-3 keys at all.
+    REQUIRE (processor.presetManager.loadPreset ("Master Glue (Subtle)"));
+
+    static constexpr const char* schema3Ids[] = {
+        ParamIDs::compEnable, ParamIDs::compModel, ParamIDs::compThreshold, ParamIDs::compRatio,
+        ParamIDs::compAttack, ParamIDs::compRelease, ParamIDs::compMakeup, ParamIDs::compScHpf,
+        ParamIDs::iron, ParamIDs::quality, ParamIDs::autoGain,
+    };
+
+    for (const auto* id : schema3Ids)
+    {
+        auto* parameter = processor.apvts.getParameter (id);
+        REQUIRE (parameter != nullptr);
+        INFO ("parameter " << id);
+        CHECK (parameter->getValue() == Catch::Approx (parameter->getDefaultValue()).margin (1.0e-6));
+    }
+}

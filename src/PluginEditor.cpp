@@ -13,7 +13,7 @@ namespace
     constexpr int margin = 16;
     constexpr int slotWidth = knobSize + margin;
     constexpr int columns = 6;
-    constexpr int numControls = 12;
+    constexpr int numControls = 24; // 12 v0.1/v0.2 controls + 11 v0.3.0 + the GR readout
     constexpr int rows = (numControls + columns - 1) / columns; // ceil
     constexpr int presetBarHeight = 28;
     constexpr int editorWidth = margin * 2 + columns * slotWidth - margin;
@@ -57,11 +57,46 @@ AureateAudioProcessorEditor::AureateAudioProcessorEditor (AureateAudioProcessor&
     configureKnob (mixKnob, ParamIDs::mix, "Mix");
     configureKnob (outputKnob, ParamIDs::output, "Output");
 
+    // v0.3.0, in signal-flow order: the Glue section (which runs ahead of
+    // Drive), then Iron, Quality and Auto Gain.
+    configureToggle (compEnableToggle, ParamIDs::compEnable, "Glue");
+    configureChoice (compModelChoice, ParamIDs::compModel, "Glue Model");
+    configureKnob (compThresholdKnob, ParamIDs::compThreshold, "Threshold");
+    configureChoice (compRatioChoice, ParamIDs::compRatio, "Ratio");
+    configureChoice (compAttackChoice, ParamIDs::compAttack, "Attack");
+    configureChoice (compReleaseChoice, ParamIDs::compRelease, "Release");
+    configureKnob (compMakeupKnob, ParamIDs::compMakeup, "Makeup");
+    configureKnob (compScHpfKnob, ParamIDs::compScHpf, "SC Filter");
+    configureKnob (ironKnob, ParamIDs::iron, "Iron");
+    configureChoice (qualityChoice, ParamIDs::quality, "Quality");
+    configureToggle (autoGainToggle, ParamIDs::autoGain, "Auto Gain");
+
+    gainReductionLabel.setText ("Gain Reduction", juce::dontSendNotification);
+    gainReductionLabel.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (gainReductionLabel);
+
+    gainReductionValue.setText ("0.0 dB", juce::dontSendNotification);
+    gainReductionValue.setJustificationType (juce::Justification::centred);
+    gainReductionValue.attachToComponent (&gainReductionLabel, false);
+    addAndMakeVisible (gainReductionValue);
+
+    // 30 Hz: fast enough to read as a meter, slow enough to be free.
+    startTimerHz (30);
+
     setResizable (false, false);
     setSize (editorWidth, editorHeight);
 }
 
-AureateAudioProcessorEditor::~AureateAudioProcessorEditor() = default;
+AureateAudioProcessorEditor::~AureateAudioProcessorEditor()
+{
+    stopTimer();
+}
+
+void AureateAudioProcessorEditor::timerCallback()
+{
+    const auto gainReductionDb = audioProcessor.getCurrentGrDb();
+    gainReductionValue.setText (juce::String (gainReductionDb, 1) + " dB", juce::dontSendNotification);
+}
 
 void AureateAudioProcessorEditor::configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText)
 {
@@ -93,6 +128,16 @@ void AureateAudioProcessorEditor::configureChoice (Choice& choice, const juce::S
     addAndMakeVisible (choice.label);
 
     choice.attachment = std::make_unique<ComboBoxAttachment> (audioProcessor.apvts, parameterId, choice.box);
+}
+
+void AureateAudioProcessorEditor::configureToggle (Toggle& toggle, const juce::String& parameterId,
+                                                    const juce::String& labelText)
+{
+    toggle.button.setButtonText (labelText);
+    addAndMakeVisible (toggle.button);
+
+    toggle.attachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        audioProcessor.apvts, parameterId, toggle.button);
 }
 
 void AureateAudioProcessorEditor::resized()
@@ -130,4 +175,21 @@ void AureateAudioProcessorEditor::resized()
 
     for (auto* knob : { &toneKnob, &hfTrimKnob, &lfTrimKnob, &hissKnob, &mixKnob, &outputKnob })
         placeInGrid (knob->slider, index++, knobSize + textBoxHeight);
+
+    // v0.3.0 rows.
+    placeInGrid (compEnableToggle.button, index++, textBoxHeight);
+    placeInGrid (compModelChoice.box, index++, textBoxHeight);
+
+    for (auto* knob : { &compThresholdKnob })
+        placeInGrid (knob->slider, index++, knobSize + textBoxHeight);
+
+    for (auto* choice : { &compRatioChoice, &compAttackChoice, &compReleaseChoice })
+        placeInGrid (choice->box, index++, textBoxHeight);
+
+    for (auto* knob : { &compMakeupKnob, &compScHpfKnob, &ironKnob })
+        placeInGrid (knob->slider, index++, knobSize + textBoxHeight);
+
+    placeInGrid (qualityChoice.box, index++, textBoxHeight);
+    placeInGrid (autoGainToggle.button, index++, textBoxHeight);
+    placeInGrid (gainReductionLabel, index++, textBoxHeight);
 }

@@ -1,6 +1,7 @@
 #include "AllocationGuard.h"
 #include "PluginProcessor.h"
 #include "dsp/AureateEngine.h"
+#include "dsp/GlueCompressor.h"
 #include "params/ParameterIds.h"
 #include "TestHelpers.h"
 
@@ -129,6 +130,135 @@ TEST_CASE ("AureateEngine::process allocates no memory across repeated blocks", 
 
         TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.5f, static_cast<juce::int64> (i) * 512);
         engine.process (block);
+    }
+
+    CHECK (guard.count() == 0);
+}
+
+//==============================================================================
+// 6.15 - the allocation guard, extended over every v0.3.0 path
+//==============================================================================
+TEST_CASE ("6.15 processBlock allocates nothing with the Glue section running, in either law and every release position",
+           "[dsp][rt-safety][alloc][glue]")
+{
+    // The Vari-Mu law's release network is the interesting case: its
+    // coefficients are precomputed per switch position at prepare() time
+    // precisely so that throwing the switch on the audio thread cannot touch
+    // the heap. Its gain cell is a fixed-size table for the same reason.
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    setParam (processor, ParamIDs::drive, 6.0f);
+    setParam (processor, ParamIDs::mix, 100.0f);
+    setParam (processor, ParamIDs::compEnable, 1.0f);
+    setParam (processor, ParamIDs::compThreshold, -12.0f);
+    setParam (processor, ParamIDs::compMakeup, 4.0f);
+    setParam (processor, ParamIDs::compScHpf, 150.0f);
+    setParam (processor, ParamIDs::compModel, 0.0f);
+    setParam (processor, ParamIDs::compRatio, 1.0f);
+    setParam (processor, ParamIDs::compAttack, 2.0f);
+    setParam (processor, ParamIDs::compRelease, 0.0f);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+
+    for (int warmup = 0; warmup < 8; ++warmup)
+    {
+        TestHelpers::fillWithSine (buffer, 48000.0, 220.0, 0.5f, static_cast<juce::int64> (warmup) * 512);
+        processor.processBlock (buffer, midi);
+    }
+
+    TestAlloc::AllocationGuard guard;
+
+    for (int block = 0; block < 64; ++block)
+    {
+        // Walk through both laws and every release position, including Auto,
+        // while the threshold and makeup sweep continuously underneath.
+        setParam (processor, ParamIDs::compModel, static_cast<float> (block % 2));
+        setParam (processor, ParamIDs::compRelease, static_cast<float> (block % GlueCompressor::numReleases));
+        setParam (processor, ParamIDs::compRatio, static_cast<float> (block % GlueCompressor::numRatios));
+        setParam (processor, ParamIDs::compAttack, static_cast<float> (block % GlueCompressor::numAttacks));
+        setParam (processor, ParamIDs::compThreshold, -30.0f + static_cast<float> (block) * 0.5f);
+        setParam (processor, ParamIDs::compScHpf, 20.0f + static_cast<float> (block) * 5.0f);
+
+        TestHelpers::fillWithSine (buffer, 48000.0, 220.0, 0.5f, static_cast<juce::int64> (block) * 512);
+        processor.processBlock (buffer, midi);
+    }
+
+    CHECK (guard.count() == 0);
+}
+
+TEST_CASE ("6.15 processBlock allocates nothing with Iron, HQ quality and Auto Gain engaged and toggling",
+           "[dsp][rt-safety][alloc]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    setParam (processor, ParamIDs::drive, 12.0f);
+    setParam (processor, ParamIDs::mix, 100.0f);
+    setParam (processor, ParamIDs::iron, 60.0f);
+    setParam (processor, ParamIDs::quality, 1.0f);
+    setParam (processor, ParamIDs::autoGain, 1.0f);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+
+    for (int warmup = 0; warmup < 8; ++warmup)
+    {
+        TestHelpers::fillWithSine (buffer, 48000.0, 220.0, 0.5f, static_cast<juce::int64> (warmup) * 512);
+        processor.processBlock (buffer, midi);
+    }
+
+    TestAlloc::AllocationGuard guard;
+
+    for (int block = 0; block < 64; ++block)
+    {
+        // Iron sweeps continuously (so its two filters' coefficients are
+        // re-derived every block, the path that would allocate if it went
+        // back through juce::dsp::IIR::Coefficients::make*), and all three
+        // switches toggle underneath it.
+        setParam (processor, ParamIDs::iron, static_cast<float> (block % 64) * 1.5f);
+        setParam (processor, ParamIDs::quality, static_cast<float> (block % 2));
+        setParam (processor, ParamIDs::autoGain, static_cast<float> ((block / 3) % 2));
+        setParam (processor, ParamIDs::character, static_cast<float> (block % 3));
+
+        TestHelpers::fillWithSine (buffer, 48000.0, 220.0, 0.5f, static_cast<juce::int64> (block) * 512);
+        processor.processBlock (buffer, midi);
+    }
+
+    CHECK (guard.count() == 0);
+}
+
+TEST_CASE ("6.15 Toggling the Glue enable on the audio thread allocates nothing", "[dsp][rt-safety][alloc][glue]")
+{
+    // The enable is the one switch that can take process() from "returns
+    // immediately" to "runs the whole section" between two consecutive
+    // blocks, so it is the most likely place for a lazily-allocated
+    // something to hide.
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    setParam (processor, ParamIDs::drive, 6.0f);
+    setParam (processor, ParamIDs::compEnable, 1.0f);
+    setParam (processor, ParamIDs::compThreshold, -15.0f);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    juce::MidiBuffer midi;
+
+    for (int warmup = 0; warmup < 8; ++warmup)
+    {
+        setParam (processor, ParamIDs::compEnable, static_cast<float> (warmup % 2));
+        TestHelpers::fillWithSine (buffer, 48000.0, 220.0, 0.6f, static_cast<juce::int64> (warmup) * 512);
+        processor.processBlock (buffer, midi);
+    }
+
+    TestAlloc::AllocationGuard guard;
+
+    for (int block = 0; block < 64; ++block)
+    {
+        setParam (processor, ParamIDs::compEnable, static_cast<float> (block % 2));
+        TestHelpers::fillWithSine (buffer, 48000.0, 220.0, 0.6f, static_cast<juce::int64> (block) * 512);
+        processor.processBlock (buffer, midi);
     }
 
     CHECK (guard.count() == 0);
