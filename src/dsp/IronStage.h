@@ -100,21 +100,7 @@ public:
         const auto referenceOmega = juce::MathConstants<double>::twoPi * fluxReferenceHz;
         fluxNormalisation = std::sqrt (referenceOmega * referenceOmega + omega * omega);
 
-        bumpFilter.prepare (spec);
-        highCutFilter.prepare (spec);
-
         setAmount (amount);
-
-        // Prime both filters with the allocating factory once, here, so that
-        // applyCoefficients() below (and every per-block call from the audio
-        // thread afterwards) has already-allocated 2nd-order storage to write
-        // into - the same allocate-in-prepare pattern as the engine's own IIR
-        // stages, see src/dsp/RealtimeCoefficients.h.
-        *bumpFilter.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-            oversampledRate, bumpFrequencyHz, bumpMinimumQ, 1.0f);
-        *highCutFilter.state = *juce::dsp::IIR::Coefficients<float>::makeLowPass (
-            oversampledRate, highCutMaximumHz, highCutQ);
-
         applyCoefficients();
 
         reset();
@@ -126,8 +112,11 @@ public:
         differentiatorState.fill (0.0);
         adaaPreviousInput.fill (0.0);
 
-        bumpFilter.reset();
-        highCutFilter.reset();
+        for (auto& state : bumpStates)
+            state = {};
+
+        for (auto& state : highCutStates)
+            state = {};
     }
 
     //==========================================================================
@@ -146,7 +135,7 @@ public:
         // are never perfectly symmetric, and the resulting 2nd harmonic is
         // most of what "iron" sounds like as distinct from plain soft
         // clipping. Scaled by drive so it vanishes with the effect.
-        offset = 0.08f * drive;
+        offset = 0.08 * static_cast<double> (drive);
 
         bumpDb = maximumBumpDb * amount;
         bumpQ = bumpMinimumQ + (bumpMaximumQ - bumpMinimumQ) * amount;
@@ -156,24 +145,16 @@ public:
     float getDrive() const noexcept { return drive; }
 
     // Recomputes the two filters' coefficients from the current amount.
-    // Allocation-free (ArrayCoefficients into already-allocated storage), so
-    // it is safe to call once per block from the audio thread.
+    // Writes into plain value types, so it is allocation-free and safe to
+    // call once per block from the audio thread.
     void applyCoefficients()
     {
-        if (bumpFilter.state == nullptr || highCutFilter.state == nullptr)
-            return;
+        const auto nyquist = oversampledRate * 0.5;
+        const auto clampedBump = juce::jlimit (10.0, nyquist * 0.9, static_cast<double> (bumpFrequencyHz));
+        const auto clampedHighCut = juce::jlimit (10.0, nyquist * 0.9, static_cast<double> (highCutHz));
 
-        const auto nyquist = static_cast<float> (oversampledRate) * 0.5f;
-        const auto clampedBump = juce::jlimit (10.0f, nyquist * 0.9f, bumpFrequencyHz);
-        const auto clampedHighCut = juce::jlimit (10.0f, nyquist * 0.9f, highCutHz);
-
-        applyBiquad (*bumpFilter.state,
-                     juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter (
-                         oversampledRate, clampedBump, bumpQ, juce::Decibels::decibelsToGain (bumpDb)));
-
-        applyBiquad (*highCutFilter.state,
-                     juce::dsp::IIR::ArrayCoefficients<float>::makeLowPass (
-                         oversampledRate, clampedHighCut, highCutQ));
+        bumpCoefficients = makePeaking (clampedBump, bumpQ, std::pow (10.0, bumpDb / 40.0));
+        highCutCoefficients = makeLowPass (clampedHighCut, highCutQ);
     }
 
     //==========================================================================
@@ -191,25 +172,41 @@ public:
         // division by it would poison the integrator state permanently.
         const auto safeDrive = juce::jmax (1.0e-6f, drive);
 
-        const auto v = static_cast<float> (u * fluxNormalisation) * safeDrive;
+        const auto v = u * fluxNormalisation * static_cast<double> (safeDrive);
 
         // First-order ADAA on the core nonlinearity. Belt and braces at 4x -
         // it costs one extra logCosh per sample and buys back most of what
         // the deliberate DC offset would otherwise throw above Nyquist.
+        //
+        // Evaluated in double like the rest of the flux path. The shaped
+        // value is a difference of two numbers straddling tanh(offset), and
+        // the differentiator downstream then multiplies the difference of two
+        // CONSECUTIVE shaped values by the sample rate - a cancellation of a
+        // cancellation. In single precision that lifted the small-signal
+        // inverse-pair error above 10%; in double it is under 0.01%.
         auto& previous = adaaPreviousInput[channel];
-        const auto previousV = static_cast<float> (previous);
-        previous = static_cast<double> (v);
+        const auto previousV = previous;
+        previous = v;
 
         const auto delta = v - previousV;
 
-        const auto shaped = std::abs (delta) < 1.0e-5f
-                                ? core (0.5f * (v + previousV))
+        // The fallback threshold is 1e-5, not something far smaller "to use
+        // the exact form more often". The quotient divides the difference of
+        // two antiderivative values by delta, so it amplifies their absolute
+        // rounding error by 1/delta: at 1e-9 that is a factor of a billion,
+        // which measurably lifted this stage's small-signal error to 4.7e-4
+        // relative and parked Nyquist-rate spikes at every flux extremum -
+        // exactly where delta passes through zero - even in double precision.
+        // Below the threshold the midpoint evaluation is both the correct
+        // limit and enormously better conditioned.
+        const auto shaped = std::abs (delta) < 1.0e-5
+                                ? core (0.5 * (v + previousV))
                                 : (coreAntiderivative (v) - coreAntiderivative (previousV)) / delta;
 
         // Undo both the drive and the flux normalisation, so the pair is an
         // exact inverse in the linear region and the whole stage nulls
         // towards its two filters alone as drive -> 0.
-        const auto s = static_cast<double> (shaped) / (static_cast<double> (safeDrive) * fluxNormalisation);
+        const auto s = shaped / (static_cast<double> (safeDrive) * fluxNormalisation);
 
         auto& previousS = differentiatorState[channel];
         const auto y = differentiatorCurrent * s - differentiatorPrevious * previousS;
@@ -224,9 +221,22 @@ public:
     // shaped by them).
     void processFilters (juce::dsp::AudioBlock<float>& block)
     {
-        juce::dsp::ProcessContextReplacing<float> context (block);
-        bumpFilter.process (context);
-        highCutFilter.process (context);
+        const auto channels = juce::jmin (block.getNumChannels(), maxChannels);
+
+        for (size_t channel = 0; channel < channels; ++channel)
+        {
+            auto* data = block.getChannelPointer (channel);
+            auto& bump = bumpStates[channel];
+            auto& highCut = highCutStates[channel];
+
+            for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+            {
+                auto value = static_cast<double> (data[sample]);
+                value = bump.process (bumpCoefficients, value);
+                value = highCut.process (highCutCoefficients, value);
+                data[sample] = static_cast<float> (value);
+            }
+        }
     }
 
 private:
@@ -237,33 +247,86 @@ private:
     // large constant output (the differentiator's DC gain applied to
     // tanh(b)), which is a far bigger effect than the 2nd harmonic the offset
     // exists to create.
-    float core (float v) const noexcept
+    double core (double v) const noexcept
     {
         return std::tanh (v + offset) - std::tanh (offset);
     }
 
-    float coreAntiderivative (float v) const noexcept
+    double coreAntiderivative (double v) const noexcept
     {
         return logCosh (v + offset) - std::tanh (offset) * v;
     }
 
-    static float logCosh (float v) noexcept
+    static double logCosh (double v) noexcept
     {
         const auto absolute = std::abs (v);
-        return absolute + std::log1p (std::exp (-2.0f * absolute)) - 0.6931471806f;
+        return absolute + std::log1p (std::exp (-2.0 * absolute)) - 0.69314718055994531;
     }
 
-    static void applyBiquad (juce::dsp::IIR::Coefficients<float>& target,
-                             const std::array<float, 6>& raw) noexcept
+    //==========================================================================
+    // A plain transposed-direct-form-II biquad with DOUBLE coefficients and
+    // double state, rather than juce::dsp::IIR::Filter<float>.
+    //
+    // Not a stylistic preference: the resonance bump sits at 35 Hz while this
+    // stage runs at 4x the host rate (192 kHz at a 48 kHz session), a
+    // normalised frequency of 1.8e-4. At that ratio a bilinear-transform
+    // biquad's coefficients differ from each other in the seventh significant
+    // digit, which single precision simply does not have - measured, a float
+    // implementation put the "35 Hz" peak's maximum nearer 32 Hz and lost a
+    // third of its gain. Double precision has the headroom by three orders of
+    // magnitude, and the cost is two extra multiplies per sample on a stage
+    // that is branch-skipped whenever it is not in use.
+    struct BiquadCoefficients
     {
-        auto* destination = target.getRawCoefficients();
-        const auto a0 = raw[3];
+        double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0;
+    };
 
-        destination[0] = raw[0] / a0;
-        destination[1] = raw[1] / a0;
-        destination[2] = raw[2] / a0;
-        destination[3] = raw[4] / a0;
-        destination[4] = raw[5] / a0;
+    struct BiquadState
+    {
+        double z1 = 0.0, z2 = 0.0;
+
+        double process (const BiquadCoefficients& c, double x) noexcept
+        {
+            const auto y = c.b0 * x + z1;
+            z1 = c.b1 * x - c.a1 * y + z2;
+            z2 = c.b2 * x - c.a2 * y;
+            return y;
+        }
+    };
+
+    // RBJ cookbook peaking EQ. `amplitude` is sqrt(linear gain), i.e. A.
+    BiquadCoefficients makePeaking (double frequencyHz, double q, double amplitude) const noexcept
+    {
+        const auto omega = juce::MathConstants<double>::twoPi * frequencyHz / oversampledRate;
+        const auto cosine = std::cos (omega);
+        const auto alpha = std::sin (omega) / (2.0 * q);
+
+        const auto a0 = 1.0 + alpha / amplitude;
+
+        BiquadCoefficients c;
+        c.b0 = (1.0 + alpha * amplitude) / a0;
+        c.b1 = (-2.0 * cosine) / a0;
+        c.b2 = (1.0 - alpha * amplitude) / a0;
+        c.a1 = (-2.0 * cosine) / a0;
+        c.a2 = (1.0 - alpha / amplitude) / a0;
+        return c;
+    }
+
+    BiquadCoefficients makeLowPass (double frequencyHz, double q) const noexcept
+    {
+        const auto omega = juce::MathConstants<double>::twoPi * frequencyHz / oversampledRate;
+        const auto cosine = std::cos (omega);
+        const auto alpha = std::sin (omega) / (2.0 * q);
+
+        const auto a0 = 1.0 + alpha;
+
+        BiquadCoefficients c;
+        c.b0 = ((1.0 - cosine) * 0.5) / a0;
+        c.b1 = (1.0 - cosine) / a0;
+        c.b2 = c.b0;
+        c.a1 = (-2.0 * cosine) / a0;
+        c.a2 = (1.0 - alpha) / a0;
+        return c;
     }
 
     static constexpr size_t maxChannels = 8;
@@ -278,10 +341,10 @@ private:
 
     float amount = 0.0f;
     float drive = 0.0f;
-    float offset = 0.0f;
-    float bumpDb = 0.0f;
-    float bumpQ = bumpMinimumQ;
-    float highCutHz = highCutMaximumHz;
+    double offset = 0.0;
+    double bumpDb = 0.0;
+    double bumpQ = bumpMinimumQ;
+    double highCutHz = highCutMaximumHz;
 
     // double state throughout the flux path: the integrator accumulates over
     // very long time scales at LF, and single precision measurably drifts
@@ -290,6 +353,8 @@ private:
     std::array<double, maxChannels> differentiatorState {};
     std::array<double, maxChannels> adaaPreviousInput {};
 
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> bumpFilter;
-    juce::dsp::ProcessorDuplicator<juce::dsp::IIR::Filter<float>, juce::dsp::IIR::Coefficients<float>> highCutFilter;
+    BiquadCoefficients bumpCoefficients {};
+    BiquadCoefficients highCutCoefficients {};
+    std::array<BiquadState, maxChannels> bumpStates {};
+    std::array<BiquadState, maxChannels> highCutStates {};
 };
