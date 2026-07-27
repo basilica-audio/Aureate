@@ -79,6 +79,31 @@ private:
     std::atomic<float>* hfTrimDb = nullptr;
     std::atomic<float>* lfTrimDb = nullptr;
 
+    // v0.3.0 additions. Same relaxed-atomics pattern as above: resolved once
+    // at construction, read (never searched for) every block.
+    std::atomic<float>* compEnable = nullptr;
+    std::atomic<float>* compModel = nullptr;
+    std::atomic<float>* compThresholdDb = nullptr;
+    std::atomic<float>* compRatioIndex = nullptr;
+    std::atomic<float>* compAttackIndex = nullptr;
+    std::atomic<float>* compReleaseIndex = nullptr;
+    std::atomic<float>* compMakeupDb = nullptr;
+    std::atomic<float>* compScHpfHz = nullptr;
+    std::atomic<float>* ironPercent = nullptr;
+    std::atomic<float>* qualityIndex = nullptr;
+    std::atomic<float>* autoGainEnable = nullptr;
+
+public:
+    // Current gain reduction in dB (positive = attenuating), published by the
+    // audio thread once per block and polled by the editor's timer. Not an
+    // APVTS parameter: it is a *measurement*, not a setting - making it a
+    // parameter would expose it to host automation, undo history and preset
+    // serialisation, none of which mean anything for a meter.
+    float getCurrentGrDb() const noexcept { return currentGrDb.load (std::memory_order_relaxed); }
+
+private:
+    std::atomic<float> currentGrDb { 0.0f };
+
     // Pushes the current APVTS parameter values into `engine`. Shared by
     // prepareToPlay() (seeding the engine before the first block) and
     // processBlock() (every block) so the two can never drift apart.

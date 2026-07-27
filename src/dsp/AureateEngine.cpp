@@ -86,6 +86,10 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
     wowFlutterDelayLine.prepare (spec);
     wowFlutterDelayLine.setDelay (static_cast<float> (wowFlutterBaseDelaySamples));
 
+    // v0.3.0 Glue section: host rate, ahead of Drive. Prepared with the host
+    // spec, not the oversampled one - it deliberately adds no latency.
+    glueCompressor.prepare (spec);
+
     driveGain.setRampDurationSeconds (smoothingTimeSeconds);
     driveGain.prepare (spec);
 
@@ -129,6 +133,10 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
     hfTrimShelf.prepare (oversampledSpec);
     lfTrimShelf.prepare (oversampledSpec);
     hissShelf.prepare (oversampledSpec);
+
+    // v0.3.0 Iron stage: prepared at the OVERSAMPLED rate, since that is
+    // where it runs (immediately after the Character saturator).
+    ironStage.prepare (oversampledSpec);
 
     // Hiss's noise tap is generated and shaped in its own scratch buffer
     // (see AureateEngine.h) before being added into the wet block - sized to
@@ -201,6 +209,16 @@ void AureateEngine::prepare (const juce::dsp::ProcessSpec& spec)
     lfTrimDbSmoothed.reset (sampleRate, smoothingTimeSeconds);
     lfTrimDbSmoothed.setCurrentAndTargetValue (lastLfTrimDb);
 
+    // v0.3.0. Both are consumed once per block from the host-rate loop, so
+    // (like every smoother above, and for the reason spelled out in the
+    // warmthLowPassHzSmoothed comment) they are reset at the host rate even
+    // though Iron's amount is applied to a stage running at 4x.
+    ironAmountSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    ironAmountSmoothed.setCurrentAndTargetValue (lastIronProportion01);
+    autoGainSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    updateAutoGainTarget();
+    autoGainSmoothed.setCurrentAndTargetValue (autoGainSmoothed.getTargetValue());
+
     reset();
 
     // Prime the filter coefficients immediately so the very first
@@ -237,10 +255,17 @@ void AureateEngine::reset()
     wowFlutterWowPhase = 0.0;
     wowFlutterFlutterPhase = 0.0;
 
+    glueCompressor.reset();
+
     driveGain.reset();
 
     if (oversampler != nullptr)
         oversampler->reset();
+
+    ironStage.reset();
+
+    for (auto& state : adaaStates)
+        state.reset();
 
     warmthLowPass.reset();
     headBumpPeak.reset();
@@ -260,7 +285,9 @@ void AureateEngine::reset()
 
 void AureateEngine::setDriveDb (float newDriveDb)
 {
+    lastDriveDb = newDriveDb;
     driveGain.setGainDecibels (newDriveDb);
+    updateAutoGainTarget();
 }
 
 void AureateEngine::setWarmthProportion (float newProportion01)
@@ -316,6 +343,7 @@ void AureateEngine::setCharacter (TapeSaturator::Model newModel)
 {
     character = newModel;
     updateWarmthBiasTarget();
+    updateAutoGainTarget();
 }
 
 void AureateEngine::setHfTrimDb (float newTrimDb)
@@ -330,6 +358,85 @@ void AureateEngine::setLfTrimDb (float newTrimDb)
     lfTrimDbSmoothed.setTargetValue (newTrimDb);
 }
 
+//==============================================================================
+// v0.3.0 parameter surface. Each of these forwards to a stage that is itself
+// responsible for its own neutral bypass, so there is no "is it on?" logic
+// duplicated here.
+void AureateEngine::setCompressorEnabled (bool shouldBeEnabled)
+{
+    glueCompressor.setEnabled (shouldBeEnabled);
+}
+
+void AureateEngine::setCompressorLaw (GlueCompressor::Law newLaw)
+{
+    glueCompressor.setLaw (newLaw);
+}
+
+void AureateEngine::setCompressorThresholdDb (float newThresholdDb)
+{
+    glueCompressor.setThresholdDb (newThresholdDb);
+}
+
+void AureateEngine::setCompressorRatioIndex (int newIndex)
+{
+    glueCompressor.setRatioIndex (newIndex);
+}
+
+void AureateEngine::setCompressorAttackIndex (int newIndex)
+{
+    glueCompressor.setAttackIndex (newIndex);
+}
+
+void AureateEngine::setCompressorReleaseIndex (int newIndex)
+{
+    glueCompressor.setReleaseIndex (newIndex);
+}
+
+void AureateEngine::setCompressorMakeupDb (float newMakeupDb)
+{
+    glueCompressor.setMakeupDb (newMakeupDb);
+}
+
+void AureateEngine::setCompressorSidechainHpfHz (float newCutoffHz)
+{
+    glueCompressor.setSidechainHpfHz (newCutoffHz);
+}
+
+void AureateEngine::setIronProportion (float newProportion01)
+{
+    lastIronProportion01 = juce::jlimit (0.0f, 1.0f, newProportion01);
+    ironAmountSmoothed.setTargetValue (lastIronProportion01);
+}
+
+void AureateEngine::setHighQuality (bool shouldUseAdaa)
+{
+    // The functor swap happens at a block boundary (process() reads this
+    // once), and both paths are continuous functions of the same input, so
+    // toggling mid-signal is click-free without any crossfade - verified by
+    // the automation-safety test rather than assumed.
+    highQuality = shouldUseAdaa;
+}
+
+void AureateEngine::setAutoGainEnabled (bool shouldCompensate)
+{
+    autoGainEnabled = shouldCompensate;
+    updateAutoGainTarget();
+}
+
+void AureateEngine::updateAutoGainTarget()
+{
+    // g_c = 10^(-drive_dB * beta / 20): undo most, deliberately not all, of
+    // the gain Drive adds, so an A/B of Drive is an A/B of *character* rather
+    // than of level. Off is exactly 1 (and is also branch-skipped in
+    // process(), so "off" costs nothing).
+    const auto target = autoGainEnabled
+                            ? juce::Decibels::decibelsToGain (-lastDriveDb * autoGainBeta (character))
+                            : 1.0f;
+
+    autoGainSmoothed.setTargetValue (juce::jmax (1.0e-6f, target));
+}
+
+//==============================================================================
 void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
 {
     const auto requestedSamples = block.getNumSamples();
@@ -381,6 +488,16 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
     const auto hissAmount = hissAmountSmoothed.skip (static_cast<int> (numSamples));
     const auto hfTrimDb = hfTrimDbSmoothed.skip (static_cast<int> (numSamples));
     const auto lfTrimDb = lfTrimDbSmoothed.skip (static_cast<int> (numSamples));
+    const auto ironAmount = newStagesBypassedForTesting
+                                ? 0.0f
+                                : ironAmountSmoothed.skip (static_cast<int> (numSamples));
+    const auto autoGainLinear = (newStagesBypassedForTesting || ! autoGainEnabled)
+                                    ? 1.0f
+                                    : autoGainSmoothed.skip (static_cast<int> (numSamples));
+
+    const auto ironActive = ironAmount > 0.0f;
+    const auto useAdaa = highQuality && ! newStagesBypassedForTesting;
+    const auto autoGainActive = autoGainEnabled && ! newStagesBypassedForTesting;
 
     const auto combinedBias = juce::jlimit (-maxCombinedBias, maxCombinedBias, warmthBias + explicitBias);
     const auto hissGain = hissAmount * maxHissLinearGain;
@@ -459,6 +576,13 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
         }
     }
 
+    // v0.3.0 Glue section: after the transport modulation, before Drive
+    // (console insert order - dynamics, then the console/tape colour they
+    // feed). Runs at the host rate and returns immediately when disabled, so
+    // at the default this is genuinely the v0.2.1 code path.
+    if (! newStagesBypassedForTesting)
+        glueCompressor.process (workingBlock);
+
     driveGain.process (context);
 
     auto oversampledBlock = oversampler->processSamplesUp (workingBlock);
@@ -472,12 +596,57 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
     warmthLowPass.process (oversampledContext);
     headBumpPeak.process (oversampledContext);
 
-    for (size_t channel = 0; channel < oversampledBlock.getNumChannels(); ++channel)
+    if (useAdaa)
     {
-        auto* channelData = oversampledBlock.getChannelPointer (channel);
+        // HQ: first-order antiderivative anti-aliasing on the same three
+        // transfer functions, inside the same 4x region and at the same
+        // reported latency (see src/dsp/AdaaShapers.h, including its two
+        // honesty notes about the inherent half-sample delay at the
+        // oversampled rate and the resulting high-harmonic droop).
+        for (size_t channel = 0; channel < oversampledBlock.getNumChannels(); ++channel)
+        {
+            auto* channelData = oversampledBlock.getChannelPointer (channel);
+            auto& adaaState = adaaStates[juce::jmin (channel, maxOversampledChannels - 1)];
 
-        for (size_t sample = 0; sample < oversampledBlock.getNumSamples(); ++sample)
-            channelData[sample] = TapeSaturator::processSample (channelData[sample], combinedBias, character);
+            for (size_t sample = 0; sample < oversampledBlock.getNumSamples(); ++sample)
+                channelData[sample] = AdaaShapers::processSample (channelData[sample], combinedBias,
+                                                                   character, adaaState);
+        }
+    }
+    else
+    {
+        // Classic: byte-for-byte the v0.2.1 loop. Deliberately not folded into
+        // a generic shaper call with the branch above - keeping the original
+        // statement is the cheapest possible guarantee that Classic quality
+        // still computes exactly what it always did.
+        for (size_t channel = 0; channel < oversampledBlock.getNumChannels(); ++channel)
+        {
+            auto* channelData = oversampledBlock.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < oversampledBlock.getNumSamples(); ++sample)
+                channelData[sample] = TapeSaturator::processSample (channelData[sample], combinedBias, character);
+        }
+    }
+
+    // v0.3.0 Iron stage: the output transformer the electronics above drive.
+    // Branch-skipped entirely at 0%, which is what makes iron's default a
+    // bit-identical bypass rather than an inaudible one.
+    if (ironActive)
+    {
+        ironStage.setAmount (ironAmount);
+        ironStage.applyCoefficients();
+
+        const auto ironChannels = juce::jmin (oversampledBlock.getNumChannels(), maxOversampledChannels);
+
+        for (size_t channel = 0; channel < ironChannels; ++channel)
+        {
+            auto* channelData = oversampledBlock.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < oversampledBlock.getNumSamples(); ++sample)
+                channelData[sample] = ironStage.processCoreSample (channelData[sample], channel);
+        }
+
+        ironStage.processFilters (oversampledBlock);
     }
 
     // Console-style tilt Tone, also run inside the oversampled domain
@@ -529,6 +698,12 @@ void AureateEngine::process (juce::dsp::AudioBlock<float>& block)
     }
 
     oversampler->processSamplesDown (workingBlock);
+
+    // v0.3.0 Auto Gain: wet-path only, applied after downsampling and before
+    // the mixer's wet input, so the dry path (and therefore the Mix-at-0%
+    // null) is untouched. Off is a skipped branch, not a multiply by 1.
+    if (autoGainActive)
+        workingBlock.multiplyBy (autoGainLinear);
 
     dryWetMixer.mixWetSamples (workingBlock);
 

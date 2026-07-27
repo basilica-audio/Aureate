@@ -69,6 +69,35 @@ namespace
 
         return nullptr;
     }
+
+    //==========================================================================
+    // State schema versioning (v0.3.0). The attribute is written on the APVTS
+    // state XML's root element by getStateInformation().
+    //
+    // Schema history, defined retroactively so the two pre-v0.3.0 shapes stay
+    // addressable even though neither ever carried the attribute:
+    //   schema 1 = v0.1.0  - has a <PARAM id="wow_flutter"> entry
+    //   schema 2 = v0.2.x  - has wow/flutter, no stateSchema attribute
+    //   schema 3 = v0.3.0  - stateSchema="3", the eleven Glue/Iron/Quality/
+    //                        Auto Gain parameters exist
+    constexpr int currentStateSchema = 3;
+    constexpr auto stateSchemaAttribute = "stateSchema";
+
+    // Every APVTS parameter ID introduced in schema 3. A state written by an
+    // older schema carries none of them, and juce::AudioProcessorValueTreeState::
+    // replaceState() only *updates* parameters it finds in the incoming tree -
+    // it leaves anything absent sitting at whatever the instance happened to
+    // hold. For eleven parameters whose entire contract is "neutral at
+    // default", inheriting a previous session's leftovers instead of the
+    // neutral default would silently break the release's central promise, so
+    // setStateInformation() below injects each missing entry explicitly at its
+    // own default rather than relying on replaceState()'s behaviour.
+    const char* const schema3ParameterIds[] = {
+        ParamIDs::compEnable, ParamIDs::compModel,   ParamIDs::compThreshold,
+        ParamIDs::compRatio,  ParamIDs::compAttack,  ParamIDs::compRelease,
+        ParamIDs::compMakeup, ParamIDs::compScHpf,   ParamIDs::iron,
+        ParamIDs::quality,    ParamIDs::autoGain
+    };
 }
 
 //==============================================================================
@@ -92,6 +121,18 @@ AureateAudioProcessor::AureateAudioProcessor()
     hfTrimDb = apvts.getRawParameterValue (ParamIDs::hfTrim);
     lfTrimDb = apvts.getRawParameterValue (ParamIDs::lfTrim);
 
+    compEnable = apvts.getRawParameterValue (ParamIDs::compEnable);
+    compModel = apvts.getRawParameterValue (ParamIDs::compModel);
+    compThresholdDb = apvts.getRawParameterValue (ParamIDs::compThreshold);
+    compRatioIndex = apvts.getRawParameterValue (ParamIDs::compRatio);
+    compAttackIndex = apvts.getRawParameterValue (ParamIDs::compAttack);
+    compReleaseIndex = apvts.getRawParameterValue (ParamIDs::compRelease);
+    compMakeupDb = apvts.getRawParameterValue (ParamIDs::compMakeup);
+    compScHpfHz = apvts.getRawParameterValue (ParamIDs::compScHpf);
+    ironPercent = apvts.getRawParameterValue (ParamIDs::iron);
+    qualityIndex = apvts.getRawParameterValue (ParamIDs::quality);
+    autoGainEnable = apvts.getRawParameterValue (ParamIDs::autoGain);
+
     jassert (driveDb != nullptr);
     jassert (warmthPercent != nullptr);
     jassert (tonePercent != nullptr);
@@ -104,6 +145,17 @@ AureateAudioProcessor::AureateAudioProcessor()
     jassert (characterIndex != nullptr);
     jassert (hfTrimDb != nullptr);
     jassert (lfTrimDb != nullptr);
+    jassert (compEnable != nullptr);
+    jassert (compModel != nullptr);
+    jassert (compThresholdDb != nullptr);
+    jassert (compRatioIndex != nullptr);
+    jassert (compAttackIndex != nullptr);
+    jassert (compReleaseIndex != nullptr);
+    jassert (compMakeupDb != nullptr);
+    jassert (compScHpfHz != nullptr);
+    jassert (ironPercent != nullptr);
+    jassert (qualityIndex != nullptr);
+    jassert (autoGainEnable != nullptr);
 
     // M2 default resolution: user "Default" preset > factory "Default"
     // preset > the ParameterLayout defaults apvts was just constructed with
@@ -238,6 +290,11 @@ void AureateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
+
+    // Publish the meter reading once per block. Relaxed ordering: the editor
+    // reads it from a timer callback and a stale-by-one-block value is
+    // exactly as correct as a fresh one at 30 Hz refresh.
+    currentGrDb.store (engine.getCurrentGrDb(), std::memory_order_relaxed);
 }
 
 void AureateAudioProcessor::pushParametersToEngine()
@@ -255,6 +312,22 @@ void AureateAudioProcessor::pushParametersToEngine()
         characterIndex->load (std::memory_order_relaxed))));
     engine.setHfTrimDb (hfTrimDb->load (std::memory_order_relaxed));
     engine.setLfTrimDb (lfTrimDb->load (std::memory_order_relaxed));
+
+    // v0.3.0. juce::AudioParameterBool's raw value is 0.0f/1.0f and the
+    // choice parameters' is the index as a float, so both go through the same
+    // relaxed-atomic read the twelve above use.
+    engine.setCompressorEnabled (compEnable->load (std::memory_order_relaxed) >= 0.5f);
+    engine.setCompressorLaw (static_cast<GlueCompressor::Law> (juce::roundToInt (
+        compModel->load (std::memory_order_relaxed))));
+    engine.setCompressorThresholdDb (compThresholdDb->load (std::memory_order_relaxed));
+    engine.setCompressorRatioIndex (juce::roundToInt (compRatioIndex->load (std::memory_order_relaxed)));
+    engine.setCompressorAttackIndex (juce::roundToInt (compAttackIndex->load (std::memory_order_relaxed)));
+    engine.setCompressorReleaseIndex (juce::roundToInt (compReleaseIndex->load (std::memory_order_relaxed)));
+    engine.setCompressorMakeupDb (compMakeupDb->load (std::memory_order_relaxed));
+    engine.setCompressorSidechainHpfHz (compScHpfHz->load (std::memory_order_relaxed));
+    engine.setIronProportion (ironPercent->load (std::memory_order_relaxed) * 0.01f);
+    engine.setHighQuality (qualityIndex->load (std::memory_order_relaxed) >= 0.5f);
+    engine.setAutoGainEnabled (autoGainEnable->load (std::memory_order_relaxed) >= 0.5f);
 }
 
 //==============================================================================
@@ -273,6 +346,13 @@ void AureateAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     const auto state = apvts.copyState();
     const std::unique_ptr<juce::XmlElement> xml (state.createXml());
+
+    // Stamp the schema version so a future build can tell a v0.3.0 state apart
+    // from the two older shapes without having to infer it from which PARAM
+    // entries happen to be present (which is how v0.1 -> v0.2 had to be
+    // detected, below - workable for one retired parameter, not a policy).
+    xml->setAttribute (stateSchemaAttribute, currentStateSchema);
+
     copyXmlToBinary (*xml, destData);
 }
 
@@ -295,7 +375,50 @@ void AureateAudioProcessor::setStateInformation (const void* data, int sizeInByt
     // ceilings changing too) character rather than silently resetting
     // Wow/Flutter to 0% on load. A state that already has "wow"/"flutter"
     // entries (i.e. already v0.2.0-shaped) is left untouched.
-    if (auto* legacyWowFlutterParam = findParamElement (*xmlState, ParamIDs::legacyWowFlutter))
+    //
+    // v0.3.0: the migration below is now explicitly gated on the schema
+    // attribute. A state that already declares schema 3 or newer cannot be a
+    // v0.1.0 state, so the legacy check is skipped outright rather than
+    // relying on the (still true, but incidental) fact that no such state
+    // carries a "wow_flutter" entry. An unknown *newer* schema is loaded
+    // tolerantly - APVTS keeps whatever parses and ignores parameter IDs this
+    // build doesn't know about - rather than refused.
+    const auto incomingSchema = xmlState->hasAttribute (stateSchemaAttribute)
+                                    ? xmlState->getIntAttribute (stateSchemaAttribute)
+                                    : 0; // 0 = "no attribute": schema 1 or 2
+
+    if (incomingSchema < currentStateSchema)
+    {
+        // Fill in every schema-3 parameter the incoming state does not carry,
+        // at that parameter's own default, so an older session/preset always
+        // lands on the neutral - and therefore bit-identical - configuration
+        // rather than inheriting the previous instance state (see
+        // schema3ParameterIds' comment for why replaceState() alone is not
+        // enough here).
+        for (const auto* id : schema3ParameterIds)
+        {
+            if (findParamElement (*xmlState, id) != nullptr)
+                continue;
+
+            auto* parameter = dynamic_cast<juce::RangedAudioParameter*> (apvts.getParameter (id));
+            jassert (parameter != nullptr);
+
+            if (parameter == nullptr)
+                continue;
+
+            auto* injected = xmlState->createNewChildElement ("PARAM");
+            injected->setAttribute ("id", id);
+            // APVTS persists *plain* (denormalised) parameter values, not
+            // normalised 0-1 ones, so the default has to be converted back.
+            injected->setAttribute ("value", parameter->convertFrom0to1 (parameter->getDefaultValue()));
+        }
+    }
+
+    auto* legacyWowFlutterParam = incomingSchema < currentStateSchema
+                                      ? findParamElement (*xmlState, ParamIDs::legacyWowFlutter)
+                                      : nullptr;
+
+    if (legacyWowFlutterParam != nullptr)
     {
         const auto legacyValue = legacyWowFlutterParam->getStringAttribute ("value");
 
