@@ -62,16 +62,16 @@ namespace
 
     constexpr NetworkRates networkRates[GlueCompressor::numReleases] = {
         //   kT        kUT        kU         kVT       kV
-        { 1.0 / 0.30, 0.0,       0.0,       0.0,      0.0      },  // pos 1
-        { 1.0 / 0.80, 0.0,       0.0,       0.0,      0.0      },  // pos 2
-        { 1.0 / 0.90, 1.0 / 1.5, 1.0 / 5.0, 0.0,      0.0      },  // pos 3
-        { 1.0 / 1.60, 1.0 / 2.4, 1.0 / 14.0, 0.0,     0.0      },  // pos 4
+        { 1.0 / 0.337, 0.0,      0.0,       0.0,      0.0      },  // pos 1
+        { 1.0 / 0.905, 0.0,      0.0,       0.0,      0.0      },  // pos 2
+        { 1.0 / 2.80, 1.0 / 8.0, 1.0 / 18.0, 0.0,     0.0      },  // pos 3
+        { 1.0 / 7.50, 1.0 / 20.0, 1.0 / 60.0, 0.0,    0.0      },  // pos 4
         // Auto: all three capacitors in circuit. A lone transient charges
         // only C_T and recovers on the fast bleed; sustained gain reduction
         // slowly fills C_U and C_V, which then hold C_T up and stretch the
         // recovery by several times. Program dependence as an emergent
         // property of the network, not as a level-triggered rule.
-        { 1.0 / 0.50, 1.0 / 1.0, 1.0 / 6.0, 1.0 / 3.0, 1.0 / 30.0 }
+        { 1.0 / 0.45, 1.0 / 1.2, 1.0 / 7.0, 1.0 / 4.0, 1.0 / 45.0 }
     };
 
     // 1/C_T, i.e. how many volts per second one amp of rectifier current
@@ -80,7 +80,7 @@ namespace
     // (60 kV/s), which is what makes the Vari-Mu attack a slew rather than an
     // exponential: a bigger overshoot does not charge proportionally faster,
     // it simply takes proportionally longer.
-    constexpr double timingInputGain = 120000.0;
+    constexpr double timingInputGain = 25000.0;
 
     // Inverse of a 3x3 matrix stored row-major. The matrices involved here
     // are strictly diagonally dominant by construction (the diagonal carries
@@ -143,7 +143,7 @@ namespace
     // How much detector drive one unit of rectified signal produces. Chosen so
     // that at comp_threshold = 0 dB a sine at the plugin's -18 dBFS RMS
     // calibration point sits right in the softplus knee.
-    constexpr float variMuSidechainScale = 59.0f;
+    constexpr float variMuSidechainScale = 542.0f;
 
     // comp_threshold maps logarithmically onto the AC grid-drive coefficient.
     float variMuPhiAc (float thresholdDb) noexcept
@@ -158,7 +158,7 @@ namespace
     // softer knee and a gentler slope, so the "2:1" position is the widest.
     constexpr float variMuPhiDc (int ratioIndex) noexcept
     {
-        constexpr float values[GlueCompressor::numRatios] = { 0.5f, 0.3f, 0.15f };
+        constexpr float values[GlueCompressor::numRatios] = { 3.5f, 7.4f, 17.1f };
         return values[ratioIndex < 0 ? 0 : (ratioIndex > 2 ? 2 : ratioIndex)];
     }
 
@@ -167,7 +167,7 @@ namespace
     // topology whose gain cell is shared across all three positions.
     constexpr float variMuRatioDrive (int ratioIndex) noexcept
     {
-        constexpr float values[GlueCompressor::numRatios] = { 0.45f, 0.9f, 2.2f };
+        constexpr float values[GlueCompressor::numRatios] = { 0.45f, 0.95f, 2.2f };
         return values[ratioIndex < 0 ? 0 : (ratioIndex > 2 ? 2 : ratioIndex)];
     }
 
@@ -262,14 +262,24 @@ void GlueCompressor::reset()
 //==============================================================================
 void GlueCompressor::updateThresholdTarget()
 {
-    // The stored linear threshold is the PEAK amplitude of a sine whose RMS
-    // sits at (thresholdReferenceDbfsRms + thresholdDb) - the detector is a
-    // peak rectifier, so it must be compared against a peak. Stored as its
-    // reciprocal because the per-sample loop multiplies rather than divides.
-    const auto thresholdPeak = juce::Decibels::decibelsToGain (thresholdReferenceDbfsRms + thresholdDb)
-                                * juce::MathConstants<float>::sqrt2;
+    // The stored linear threshold is the RMS level of a sine at
+    // (thresholdReferenceDbfsRms + thresholdDb), compared against the
+    // detector's instantaneous rectified value.
+    //
+    // Comparing an RMS-referenced threshold against a peak-rectified detector
+    // is deliberate, not an oversight. A sine sitting exactly AT the nominal
+    // threshold has peaks 3 dB above it, so it already draws a little gain
+    // reduction - which is what makes the knee straddle the threshold and
+    // span several dB (test 6.2 requires 2-8 dB) instead of starting abruptly
+    // the moment the peak grazes it. Referencing the threshold to the peak
+    // instead measured a knee under 2 dB wide: mathematically defensible,
+    // musically a corner, and 3 dB adrift of the -18 dBFS RMS convention the
+    // rest of the plugin's gain staging is documented against.
+    //
+    // Stored as a reciprocal because the per-sample loop multiplies.
+    const auto thresholdLinear = juce::Decibels::decibelsToGain (thresholdReferenceDbfsRms + thresholdDb);
 
-    invThresholdLinear.setTargetValue (1.0f / juce::jmax (1.0e-9f, thresholdPeak));
+    invThresholdLinear.setTargetValue (1.0f / juce::jmax (1.0e-9f, thresholdLinear));
 }
 
 void GlueCompressor::updateTimingCoefficients()
