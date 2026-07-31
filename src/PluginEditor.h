@@ -2,17 +2,37 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-#include "presets/PresetBar.h"
-
 #include <array>
+#include <memory>
+
+#include "gui/HubNeedle.h"
+#include "gui/MasterCropKnob.h"
+#include "gui/SubtractiveGlow.h"
+#include "presets/PresetBar.h"
 
 class AureateAudioProcessor;
 
-// A simple, functional v0.1 editor: one rotary slider per float parameter
-// (plus a combo box for the Character choice parameter), bound to the APVTS
-// via SliderAttachment/ComboBoxAttachment, laid out in a wrapping grid in
-// signal-flow order. A custom vector-drawn GUI is a later milestone; this is
-// deliberately plain but fully wired and usable.
+// M3 photoreal GUI (the "tubecomp" faceplate design) - PILOT implementation
+// for the wave shared with sibling plugins requiem/tenebrae/apotheosis (see
+// src/gui/'s HubNeedle/MasterCropKnob/SubtractiveGlow/ToggleZoneSwap, all
+// built design-agnostic so those siblings can reuse them against their own
+// master renders and geometry tables).
+//
+// Architecture, copied from basilica-audio/silentium's own master-baseline
+// pattern (see that repo's PluginEditor.h top-of-file docs): a SINGLE baked
+// master image (resources/gui/master_tubecomp.png) is the sole faceplate -
+// steel plate, wooden cheeks, handle, empty VU dial, all 10 knobs baked at
+// 12 o'clock, all 4 toggles baked UP, tube vents at full glow, 3 blank brass
+// nameplates - and every dynamic element is a small, targeted live overlay
+// drawn on top of it:
+//   1. baseline master (paint())
+//   2. 10x MasterCropKnob (own child components, each rotating a feathered
+//      crop of its own knob's baked art)
+//   3. 4x toggle-zone crop-swap (paint(), ToggleZoneSwap - only for toggles
+//      away from their own baked/default pose)
+//   4. vent-glow subtractive breathing (paint(), SubtractiveGlow)
+//   5. HubNeedle (own child component, VU needle only - the dial face
+//      itself stays fully baked)
 class AureateAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           private juce::Timer
 {
@@ -20,89 +40,63 @@ public:
     explicit AureateAudioProcessorEditor (AureateAudioProcessor& processorToEdit);
     ~AureateAudioProcessorEditor() override;
 
+    void paint (juce::Graphics& g) override;
     void resized() override;
 
-private:
-    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    // Test/preview-only: mirrors basilica-audio/silentium's
+    // setVentGlowMixForPreview()/setVentGlowElapsedSecondsForPreview() -
+    // headless test binaries have no running message loop to pump real
+    // timer ticks through (see tests/gui/EditorSnapshotTests.cpp's own
+    // docs). Normal operation never calls these.
+    void setVentGlowMixForPreview (float t) noexcept;
+    void setVentGlowElapsedSecondsForPreview (double elapsedSeconds) noexcept;
+    void recomputeVentGlowForPreview() noexcept;
 
-    // One knob + label per float parameter.
+private:
+    void timerCallback() override;
+    void updateVentGlowMix() noexcept;
+
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+
     struct Knob
     {
-        juce::Slider slider;
-        juce::Label label;
+        std::unique_ptr<basilica::gui::MasterCropKnob> slider;
         std::unique_ptr<SliderAttachment> attachment;
     };
 
-    // Character is a choice parameter (Tape/Console/Valve), so it gets a
-    // combo box rather than a rotary knob. As of v0.3.0 the same shape also
-    // serves Glue Model/Ratio/Attack/Release and Quality.
-    struct Choice
-    {
-        juce::ComboBox box;
-        juce::Label label;
-        std::unique_ptr<ComboBoxAttachment> attachment;
-    };
-
-    // v0.3.0: the two bool parameters (Glue, Auto Gain).
     struct Toggle
     {
-        juce::ToggleButton button;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment;
+        std::unique_ptr<juce::ToggleButton> button;
+        std::unique_ptr<ButtonAttachment> attachment;
+        juce::Image otherPositionZoneImage; // the pre-cropped "away from default" pose (toggle_N_down.png)
     };
 
     void configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText);
-    void configureChoice (Choice& choice, const juce::String& parameterId, const juce::String& labelText);
     void configureToggle (Toggle& toggle, const juce::String& parameterId, const juce::String& labelText);
-
-    // Polls the processor's gain-reduction atomic for the read-only meter
-    // below. Deliberately a timer rather than a listener: gain reduction is a
-    // measurement that changes every block, not an event.
-    void timerCallback() override;
+    void applyScaleStep (int newStepIndex);
+    void cycleScale();
 
     AureateAudioProcessor& audioProcessor;
 
-    // M2 preset system (src/presets/PresetBar.h) - a horizontal strip
-    // docked at the top of the editor. Constructed after the localisation
-    // frame is installed (see the constructor) so its TRANS()'d strings
-    // pick up the right language from the very first paint.
+    juce::Image masterImage;
+
     basilica::presets::PresetBar presetBar;
+    juce::TextButton scaleButton;
+    int scaleStepIndex = 0; // 0 = 100%, 1 = 150%, 2 = 200%
 
-    // In signal-flow order (see docs/architecture.md). Wow and Flutter are
-    // independent parameters as of v0.2.0 (docs/design-brief.md §3.6).
-    Knob wowKnob;
-    Knob flutterKnob;
-    Knob driveKnob;
-    Knob warmthKnob;
-    Knob biasKnob;
-    Choice characterChoice;
-    Knob toneKnob;
-    Knob hfTrimKnob;
-    Knob lfTrimKnob;
-    Knob hissKnob;
-    Knob mixKnob;
-    Knob outputKnob;
+    std::unique_ptr<basilica::gui::HubNeedle> needle;
 
-    // v0.3.0. Minimal wiring into the existing generic editor - the photoreal
-    // GUI is a separate milestone and lives on its own branches, so this adds
-    // rows to the same grid rather than any new look and feel.
-    Toggle compEnableToggle;
-    Choice compModelChoice;
-    Knob compThresholdKnob;
-    Choice compRatioChoice;
-    Choice compAttackChoice;
-    Choice compReleaseChoice;
-    Knob compMakeupKnob;
-    Knob compScHpfKnob;
-    Knob ironKnob;
-    Choice qualityChoice;
-    Toggle autoGainToggle;
+    static constexpr int numKnobs = 10;
+    std::array<Knob, numKnobs> knobs;
 
-    // Read-only gain-reduction readout. Not an APVTS parameter - it is a
-    // measurement, and making it one would expose it to host automation, undo
-    // history and preset serialisation, none of which mean anything here.
-    juce::Label gainReductionLabel;
-    juce::Label gainReductionValue;
+    static constexpr int numToggles = 4;
+    std::array<Toggle, numToggles> toggles;
+
+    basilica::gui::SubtractiveGlow ventGlow;
+    float ventGlowMix = 1.0f;
+    basilica::gui::GlowMixState ventGlowState;
+    juce::Rectangle<int> ventGlowRepaintBounds;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AureateAudioProcessorEditor)
 };
