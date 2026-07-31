@@ -100,13 +100,13 @@ TEST_CASE ("Every wired toggle's accessible name matches its visual label and ex
     }
 }
 
-TEST_CASE ("HubNeedle (Gain Reduction meter) exposes a read-only accessible value inside the real editor", "[gui][a11y]")
+TEST_CASE ("HubNeedle (Output Level meter) exposes a read-only accessible value inside the real editor", "[gui][a11y]")
 {
     AureateAudioProcessor processor;
     processor.prepareToPlay (48000.0, 512);
     AureateAudioProcessorEditor editor (processor);
 
-    auto* needle = findChildByTitle<basilica::gui::HubNeedle> (editor, "Gain Reduction meter");
+    auto* needle = findChildByTitle<basilica::gui::HubNeedle> (editor, "Output Level meter");
     REQUIRE (needle != nullptr);
 
     const auto handler = createHandlerForTest (*needle);

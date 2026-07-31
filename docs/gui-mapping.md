@@ -86,36 +86,38 @@ indices.
 
 ## VU needle
 
-Displays `AureateAudioProcessor::getCurrentGrDb()` (already an atomic,
-real-time-safe measurement published once per block - see
-`PluginProcessor.h`), **negated and clamped** to the dial's own measured
-tick range `[-20, +3]`:
+Displays `AureateAudioProcessor::getCurrentOutputLevelDb()` (already an
+atomic, real-time-safe measurement published once per block, post-chain -
+i.e. exactly what leaves the plugin, Output trim included - see
+`PluginProcessor.h`), converted to VU at the suite's **Standard-A**
+calibration (0 VU = -18 dBFS, same convention as sibling
+basilica-audio/silentium) and clamped to the dial's own measured tick range
+`[-20, +3]`:
 
 ```
-needleDb = clamp(-getCurrentGrDb(), -20, +3)
+vuDb = clamp(getCurrentOutputLevelDb() - (-18), -20, +3)
 ```
 
-At idle (no gain reduction, or Glue disabled) the needle rests on the
-dial's own "**0**" tick. As gain reduction increases, the needle swings
-toward the negative labels (read as "-N dB of gain reduction"), the same
-convention classic hardware bus-compressor GR meters use (0 at rest,
-swinging left/toward the printed negatives as more reduction is applied).
-
-**Known, documented deviation**: because `getCurrentGrDb()` is never
-negative, the dial's own `+1/+2/+3` (red) zone is structurally unreachable
-under this mapping - the needle can only ever occupy the "0" tick down to
-the "-20" tick. This is an accepted consequence of reusing a bidirectional
-VU faceplate (designed for a signal-level reading that can go positive) for
-a unidirectional gain-reduction reading.
+Aureate is a tape/console saturation unit, and the classic hardware
+metaphor this VU-style dial is meant to evoke - "driving the output into
+the red" - requires an actual signal-level reading. An earlier revision fed
+this same needle from gain reduction instead; because gain reduction is
+never positive, the dial's `+1/+2/+3` (red) zone was structurally
+unreachable under that mapping. Switching the source to output level
+resolves that: the needle now genuinely reaches the red zone whenever the
+output is driven above -18 dBFS by 1-3 dB. The dB→angle tick table itself
+(`HubNeedle.cpp`) is unchanged - it was always VU-calibrated; only the
+source measurement feeding it changed.
 
 ## Vent-glow "breathing"
 
-Driven from the same `getCurrentGrDb()` reading (0 dB → idle breathing
-around t≈0.85; ≥6 dB of gain reduction → the hard t=1.0 ceiling). This is
-an independent, deliberately coarse "is the Glue section working" indicator
-- unrelated to the needle's own dB scale/direction, and unaffected by
-whether Glue is even enabled (idle breathing continues regardless, per the
-suite's "idle flicker must never read as fully off" rule).
+Driven from `AureateAudioProcessor::getCurrentGrDb()` (0 dB → idle
+breathing around t≈0.85; ≥6 dB of gain reduction → the hard t=1.0 ceiling),
+independently of the VU needle above. This is a deliberately coarse "is the
+Glue section working" indicator - unrelated to the needle's own dB scale/
+direction or its output-level source, and unaffected by whether Glue is
+even enabled (idle breathing continues regardless, per the suite's "idle
+flicker must never read as fully off" rule).
 
 ## Component family (reusable by requiem/tenebrae/apotheosis)
 

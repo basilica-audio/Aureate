@@ -82,12 +82,13 @@ namespace
     };
 
     // Vent-glow breathing ballistics (SubtractiveGlow.h's stepGlowMix()) -
-    // driven from the same gain-reduction reading the needle uses (see
-    // needleDbFromGrDb() below): idle (no gain reduction) breathes around
-    // t~=0.85, rising to the hard t=1.0 ceiling as the Glue section engages
-    // more heavily. Independent of the needle's own dB scale/direction -
-    // this is a coarse "is the section working" indicator, not a precision
-    // meter.
+    // driven from the processor's own gain-reduction reading
+    // (AureateAudioProcessor::getCurrentGrDb()), independently of the VU
+    // needle below (which now reads output level, not gain reduction - see
+    // vuDbFromOutputLevelDb()'s docs): idle (no gain reduction) breathes
+    // around t~=0.85, rising to the hard t=1.0 ceiling as the Glue section
+    // engages more heavily. A coarse "is the section working" indicator, not
+    // a precision meter.
     constexpr float ventGlowTauSeconds = 0.15f;
     constexpr float ventGlowFloorDb = 0.0f;
     constexpr float ventGlowCeilingDb = 6.0f;
@@ -95,19 +96,19 @@ namespace
     constexpr float ventGlowIdleBreathHalfRange = 0.06f;
     constexpr float ventGlowPhaseSeed = 5.0f;
 
-    // The VU needle displays the processor's own gain-reduction reading
-    // (AureateAudioProcessor::getCurrentGrDb(), already atomic/real-time-safe
-    // - see PluginProcessor.h's docs), NEGATED so idle (0dB GR) rests on the
-    // dial's own "0" tick and increasing gain reduction swings the needle
-    // toward the dial's negative labels (read as "-N dB of gain reduction"),
-    // the same convention classic hardware bus-compressor GR meters use.
-    // Clamped to the dial's own measured tick range - the dial's +1/+2/+3
-    // (red) zone is structurally unreachable under this mapping (gain
-    // reduction is never negative), a known, documented consequence of
-    // reusing a bidirectional VU faceplate for a unidirectional GR reading.
-    float needleDbFromGrDb (float grDb) noexcept
+    // Standard-A suite convention (same as sibling basilica-audio/silentium):
+    // 0 VU = -18 dBFS. Aureate is a tape/console saturation unit, and the
+    // classic hardware metaphor - "driving the output into the red" - needs
+    // an actual signal-level reading; gain reduction (never positive) could
+    // never reach the dial's own +1/+2/+3 red zone (see this repo's PR #29
+    // discussion). The dB->angle tick table itself (HubNeedle.cpp) is
+    // unchanged: it was always VU-calibrated, so only the source measurement
+    // feeding it changes here.
+    constexpr float vuZeroReferenceDbfs = -18.0f;
+
+    float vuDbFromOutputLevelDb (float outputLevelDbfs) noexcept
     {
-        return juce::jlimit (-20.0f, 3.0f, -grDb);
+        return juce::jlimit (-20.0f, 3.0f, outputLevelDbfs - vuZeroReferenceDbfs);
     }
 
     juce::Image loadImage (const char* data, int size)
@@ -155,7 +156,7 @@ AureateAudioProcessorEditor::AureateAudioProcessorEditor (AureateAudioProcessor&
     basilica::gui::HubNeedle::Assets needleAssets;
     needleAssets.needleSprite = loadImage (BinaryData::needle_tubecomp_png, BinaryData::needle_tubecomp_pngSize);
     needle = std::make_unique<basilica::gui::HubNeedle> (
-        needleAssets, "Gain Reduction meter",
+        needleAssets, "Output Level meter",
         needleSpritePivotFraction, needleSpritePivotFraction,
         needleSpriteSizeFraction, needleBakedAngleDeg);
     addAndMakeVisible (*needle);
@@ -400,7 +401,7 @@ void AureateAudioProcessorEditor::updateVentGlowMix() noexcept
 
 void AureateAudioProcessorEditor::timerCallback()
 {
-    needle->setTargetDb (needleDbFromGrDb (audioProcessor.getCurrentGrDb()));
+    needle->setTargetDb (vuDbFromOutputLevelDb (audioProcessor.getCurrentOutputLevelDb()));
     needle->tick (1.0f / 30.0f);
 
     updateVentGlowMix();

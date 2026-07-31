@@ -261,6 +261,15 @@ void AureateAudioProcessor::releaseResources()
 void AureateAudioProcessor::reset()
 {
     engine.reset();
+
+    // Idle-rest fix (same rationale as basilica-audio/silentium's reset()):
+    // many hosts call reset() on transport stop/suspend, after which
+    // processBlock() may not fire again for an arbitrary amount of time.
+    // Re-parking the output-level atomic to its own floor converges the
+    // needle back toward the dial's low end as soon as the editor's next
+    // timer tick reads it, rather than holding the last loud reading
+    // indefinitely.
+    currentOutputLevelDb.store (-100.0f, std::memory_order_relaxed);
 }
 
 bool AureateAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -297,10 +306,21 @@ void AureateAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
 
-    // Publish the meter reading once per block. Relaxed ordering: the editor
-    // reads it from a timer callback and a stale-by-one-block value is
-    // exactly as correct as a fresh one at 30 Hz refresh.
+    // Publish the meter readings once per block. Relaxed ordering: the
+    // editor reads them from a timer callback and a stale-by-one-block value
+    // is exactly as correct as a fresh one at 30 Hz refresh.
     currentGrDb.store (engine.getCurrentGrDb(), std::memory_order_relaxed);
+
+    // Output-level meter: the block's peak AFTER the full chain (Output trim
+    // included), i.e. exactly what leaves the plugin - see
+    // getCurrentOutputLevelDb()'s docs. getMagnitude() is a simple
+    // allocation-free scan; skipped for zero-sample/zero-channel blocks so
+    // the last real level holds rather than collapsing to the floor.
+    const auto numSamples = buffer.getNumSamples();
+
+    if (numSamples > 0 && buffer.getNumChannels() > 0)
+        currentOutputLevelDb.store (juce::Decibels::gainToDecibels (buffer.getMagnitude (0, numSamples), -100.0f),
+                                     std::memory_order_relaxed);
 }
 
 void AureateAudioProcessor::pushParametersToEngine()

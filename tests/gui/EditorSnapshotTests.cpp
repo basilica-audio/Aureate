@@ -59,7 +59,7 @@ namespace
     // setVentGlowMixForPreview()) seed the readings directly instead.
     void configureLiveLookingState (AureateAudioProcessorEditor& editor)
     {
-        if (auto* needle = findChildByTitle<basilica::gui::HubNeedle> (editor, "Gain Reduction meter"))
+        if (auto* needle = findChildByTitle<basilica::gui::HubNeedle> (editor, "Output Level meter"))
             needle->setImmediateDbForPreview (-7.0f);
 
         if (auto* glue = findChildByTitle<juce::ToggleButton> (editor, "Glue"))
