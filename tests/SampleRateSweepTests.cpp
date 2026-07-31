@@ -35,6 +35,13 @@ namespace
     }
 
     constexpr double sweepRates[] = { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+
+    void setParam (AureateAudioProcessor& processor, const char* id, float realValue)
+    {
+        auto* param = processor.apvts.getParameter (id);
+        REQUIRE (param != nullptr);
+        param->setValueNotifyingHost (param->convertTo0to1 (realValue));
+    }
 }
 
 TEST_CASE ("Sample-rate sweep: engine null test (0% mix) holds at every rate from 44.1 to 192 kHz", "[dsp][engine][null][samplerate]")
@@ -235,6 +242,115 @@ TEST_CASE ("6.7 The Glue section's gain-reduction trace is the same in absolute 
                       << ": " << reference << " s at 48 kHz vs " << measured << " s at " << sampleRate << " Hz");
                 CHECK (measured == Catch::Approx (reference).epsilon (0.02));
             }
+        }
+    }
+}
+
+//==============================================================================
+// Suite-wide hardening wave: sample-rate matrix reprepare.
+//
+// Broader than "prepareToPlay reports consistent, positive latency at every
+// rate" above: that test only sweeps sample rate at a single fixed block
+// size and bus layout. This one drives one processor instance through a
+// full 44.1k -> 96k -> 192k reprepare matrix, crossing small AND large
+// block sizes and mono/stereo bus layouts along the way, with
+// automation-like parameter churn between reprepares. Every Aureate
+// parameter used here is fully automatable and latency-independent
+// (AureateEngine::getLatencySamples() depends only on sampleRate - see
+// AureateEngine.cpp/.h), so unlike sibling plugins tenebrae/seraph this
+// test does not need to hold any control back. Deterministic and block
+// counts kept small so this stays well under 30s even on Debug/CI.
+TEST_CASE ("Sample-rate matrix reprepare: 44.1k -> 96k -> 192k across block sizes and bus "
+           "layouts survives parameter automation and reports correct latency every time",
+           "[processor][robustness][samplerate][reprepare]")
+{
+    AureateAudioProcessor processor;
+    juce::MidiBuffer midi;
+
+    setParam (processor, ParamIDs::drive, 15.0f);
+    setParam (processor, ParamIDs::warmth, 55.0f);
+    setParam (processor, ParamIDs::tone, -30.0f);
+    setParam (processor, ParamIDs::bias, 20.0f);
+    setParam (processor, ParamIDs::output, -3.0f);
+    setParam (processor, ParamIDs::mix, 85.0f);
+
+    auto* driveParam = processor.apvts.getParameter (ParamIDs::drive);
+    REQUIRE (driveParam != nullptr);
+
+    // Tracks what Drive's value ought to be at the start of each iteration -
+    // seeded from the setParam() above, then updated to the last value the
+    // automation loop below left it at, so each reprepare's "did the value
+    // survive" check is against ground truth rather than a stale constant.
+    auto expectedDriveValue = driveParam->convertFrom0to1 (driveParam->getValue());
+
+    struct Step
+    {
+        double sampleRate;
+        int blockSize;
+        int numChannels;
+    };
+
+    // Small AND large blocks at both 96k and 192k, plus a mono layout
+    // change thrown in at 192k (Aureate supports mono -
+    // isBusesLayoutSupported() accepts mono or stereo in == out) to make
+    // sure a channel-count change riding along with a sample-rate reprepare
+    // doesn't trip anything up.
+    static constexpr Step steps[] = {
+        { 44100.0,  32,   2 },
+        { 96000.0,  32,   2 },
+        { 96000.0,  2048, 2 },
+        { 192000.0, 32,   1 },
+        { 192000.0, 2048, 2 },
+    };
+
+    for (const auto& step : steps)
+    {
+        if (step.numChannels == 1)
+        {
+            juce::AudioProcessor::BusesLayout monoLayout;
+            monoLayout.inputBuses.add (juce::AudioChannelSet::mono());
+            monoLayout.outputBuses.add (juce::AudioChannelSet::mono());
+            REQUIRE (processor.setBusesLayout (monoLayout));
+        }
+        else
+        {
+            juce::AudioProcessor::BusesLayout stereoLayout;
+            stereoLayout.inputBuses.add (juce::AudioChannelSet::stereo());
+            stereoLayout.outputBuses.add (juce::AudioChannelSet::stereo());
+            REQUIRE (processor.setBusesLayout (stereoLayout));
+        }
+
+        processor.prepareToPlay (step.sampleRate, step.blockSize);
+
+        // Latency must be reported (and positive - the oversampler plus
+        // Wow/Flutter's base delay always add some) after every single
+        // reprepare in the matrix, not just the first one.
+        CHECK (processor.getLatencySamples() > 0);
+
+        // State survival: prepareToPlay() must never reset APVTS parameter
+        // values, at any sample rate/block-size/layout combination.
+        CHECK (driveParam->convertFrom0to1 (driveParam->getValue())
+               == Catch::Approx (expectedDriveValue).margin (0.01f));
+
+        juce::AudioBuffer<float> buffer (step.numChannels, step.blockSize);
+
+        for (int block = 0; block < 4; ++block)
+        {
+            // Automation-like parameter churn while processing, mimicking a
+            // host sweeping controls mid-stream between reprepares.
+            const auto sweep = static_cast<float> (block) / 4.0f;
+            expectedDriveValue = 3.0f + sweep * 18.0f;
+            setParam (processor, ParamIDs::drive, expectedDriveValue);
+            setParam (processor, ParamIDs::warmth, sweep * 100.0f);
+            setParam (processor, ParamIDs::tone, -80.0f + sweep * 160.0f);
+            setParam (processor, ParamIDs::wow, sweep * 100.0f);
+            setParam (processor, ParamIDs::flutter, sweep * 100.0f);
+
+            TestHelpers::fillWithSine (buffer, step.sampleRate, testFrequencyHz, 0.6f,
+                                       static_cast<juce::int64> (block) * step.blockSize);
+
+            CHECK_NOTHROW (processor.processBlock (buffer, midi));
+            CHECK (TestHelpers::allSamplesFinite (buffer));
         }
     }
 }
