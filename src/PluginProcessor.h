@@ -101,8 +101,24 @@ public:
     // serialisation, none of which mean anything for a meter.
     float getCurrentGrDb() const noexcept { return currentGrDb.load (std::memory_order_relaxed); }
 
+    // M3 GUI metering: the current block's peak level in dBFS, measured on
+    // the main bus AFTER the full engine chain (including Output trim) -
+    // i.e. exactly what leaves the plugin. Same pattern as sibling
+    // basilica-audio/silentium's getInputLevelDb(): a plain relaxed atomic
+    // store from processBlock(), no locks/allocation, polled from the
+    // editor's timer. Floored at -100 dB for silent/empty blocks. This is
+    // what the VU needle now reads (see PluginEditor.cpp's
+    // vuDbFromOutputLevelDb()) - the classic tape/console-glue "driving the
+    // meter into the red" metaphor requires an actual signal-level reading,
+    // which gain reduction (never positive) could not provide.
+    float getCurrentOutputLevelDb() const noexcept { return currentOutputLevelDb.load (std::memory_order_relaxed); }
+
 private:
     std::atomic<float> currentGrDb { 0.0f };
+
+    // Floored at -100 dB, matching basilica-audio/silentium's
+    // meterInputLevelDb convention - see reset()'s own idle-rest docs.
+    std::atomic<float> currentOutputLevelDb { -100.0f };
 
     // Pushes the current APVTS parameter values into `engine`. Shared by
     // prepareToPlay() (seeding the engine before the first block) and

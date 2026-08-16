@@ -2,6 +2,7 @@
 #include "params/ParameterIds.h"
 #include "TestHelpers.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
@@ -235,4 +236,41 @@ TEST_CASE ("reset() followed by processBlock does not crash", "[robustness]")
     TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 0.6f);
     CHECK_NOTHROW (processor.processBlock (buffer, midi));
     CHECK (TestHelpers::allSamplesFinite (buffer));
+}
+
+TEST_CASE ("getCurrentOutputLevelDb() tracks post-chain output and re-parks on reset()", "[robustness][gui]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+
+    // Idle, never processed: floored at -100dB, matching
+    // basilica-audio/silentium's meterInputLevelDb convention (see
+    // PluginProcessor.h's docs).
+    CHECK (processor.getCurrentOutputLevelDb() == Catch::Approx (-100.0f));
+
+    setParam (processor, ParamIDs::drive, 0.0f);
+    setParam (processor, ParamIDs::output, 0.0f);
+    setParam (processor, ParamIDs::mix, 100.0f);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    TestHelpers::fillWithSine (buffer, 48000.0, 1000.0, 1.0f); // 0 dBFS peak sine
+    juce::MidiBuffer midi;
+
+    // A few blocks to clear the oversampler's/dry-wet's own latency-
+    // compensation delay before trusting the reading.
+    for (int i = 0; i < 8; ++i)
+        processor.processBlock (buffer, midi);
+
+    // Unity-ish gain staging (0dB drive/output, 100% mix, near-transparent
+    // engine defaults) on a 0dBFS sine should read close to 0dBFS out -
+    // loosely bounded rather than pinned, since Warmth/Character/etc. still
+    // apply gentle shaping at their default values.
+    CHECK (processor.getCurrentOutputLevelDb() > -6.0f);
+    CHECK (processor.getCurrentOutputLevelDb() <= 6.0f);
+
+    // reset() must re-park the meter to its idle floor, not hold the last
+    // loud reading indefinitely (same idle-rest rationale as
+    // basilica-audio/silentium's reset()).
+    processor.reset();
+    CHECK (processor.getCurrentOutputLevelDb() == Catch::Approx (-100.0f));
 }

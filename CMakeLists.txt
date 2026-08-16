@@ -81,6 +81,34 @@ juce_add_binary_data(AureateBinaryData SOURCES
     presets/factory/softTubeGlue.json
     presets/factory/ironBusWeight.json
     resources/i18n/de.txt
+    # M3 photoreal GUI ("tubecomp" faceplate design, the pilot for the
+    # requiem/tenebrae/apotheosis wave) - copied verbatim from
+    # brand/mocks/tubecomp/ (repo-relative to the suite root, one level
+    # above this repo; see docs/gui-mapping.md for the full provenance and
+    # parameter-mapping table). Exactly one baked master faceplate plus its
+    # small set of live-overlay source assets:
+    #   - master_tubecomp.png: the SOLE faceplate baseline (copied from
+    #     master-03-clean-base.png) - steel plate, wooden cheeks, handle,
+    #     empty VU dial, all 10 knobs at 12 o'clock, all 4 toggles UP, tube
+    #     vents at full glow, 3 blank brass nameplates.
+    #   - needle_tubecomp.png: the master-extracted, pivot-centred VU-needle
+    #     sprite (components/needle.png) - rotated live by src/gui/HubNeedle.
+    #   - toggle_{1..4}_down.png: per-toggle pre-cropped "lever down" pose
+    #     (components/toggle-N-down.png) - blitted over the baseline by
+    #     src/gui/ToggleZoneSwap when that toggle's own parameter is away
+    #     from its default (see ToggleZoneSwap.h's UP==default convention).
+    #   - vent_glow_tubecomp.png: the tube-vent glow diff layer
+    #     (components/vent-glow.png) - src/gui/SubtractiveGlow builds a
+    #     "fully dim" frame from this once at construction and cross-blends
+    #     it against the baseline live (see that class's own runtime-model
+    #     docs).
+    resources/gui/master_tubecomp.png
+    resources/gui/needle_tubecomp.png
+    resources/gui/toggle_1_down.png
+    resources/gui/toggle_2_down.png
+    resources/gui/toggle_3_down.png
+    resources/gui/toggle_4_down.png
+    resources/gui/vent_glow_tubecomp.png
 )
 
 # ==============================================================================
@@ -160,6 +188,9 @@ target_compile_definitions(Tests PRIVATE
     # ...and to presets/factory, so the SHA-256 pinning test reads the same
     # files juce_add_binary_data() embedded rather than a copy of them.
     AUREATE_PRESET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/presets/factory"
+    # Absolute path to docs/, so tests/gui/EditorSnapshotTests.cpp can write
+    # the committed docs/gui-preview.png directly rather than a copy step.
+    AUREATE_DOCS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)
