@@ -2,6 +2,7 @@
 #include "PluginProcessor.h"
 #include "gui/HubNeedle.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 // a11y coverage for every wired M3 photoreal-GUI control. Deliberately calls
@@ -135,4 +136,116 @@ TEST_CASE ("Scale button's accessible title reflects the current scale percentag
     CHECK (scaleButton->getButtonText() == "150%");
     CHECK (scaleButton->getTitle().contains ("150%"));
     CHECK_FALSE (scaleButton->getTitle().contains ("100%"));
+}
+
+// Issue #5 (keyboard navigation): juce::Slider ships with
+// setWantsKeyboardFocus(false) in JUCE 8.0.14 (juce_Slider.cpp:1461,
+// Slider::init), so MasterCropKnob was silently unreachable by Tab and its
+// keyPressed()/focus ring never fired - and even when focused, the base
+// keyPressed (juce_Slider.cpp:1029) steps by the raw parameter interval
+// (0.1% on a 200% Tone range) and ignores Shift entirely. These tests pin
+// the fixed contract (setWantsKeyboardFocus(true) + KeyboardSteps.h).
+
+TEST_CASE ("Every interactive control is keyboard-focusable", "[gui][a11y]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    AureateAudioProcessorEditor editor (processor);
+
+    int knobsSeen = 0, togglesSeen = 0;
+
+    for (int i = 0; i < editor.getNumChildComponents(); ++i)
+    {
+        auto* child = editor.getChildComponent (i);
+
+        if (auto* slider = dynamic_cast<juce::Slider*> (child))
+        {
+            ++knobsSeen;
+            INFO ("knob \"" << slider->getTitle().toStdString() << "\"");
+            CHECK (slider->getWantsKeyboardFocus());
+        }
+        else if (auto* toggle = dynamic_cast<juce::ToggleButton*> (child))
+        {
+            ++togglesSeen;
+            INFO ("toggle \"" << toggle->getTitle().toStdString() << "\"");
+            CHECK (toggle->getWantsKeyboardFocus());
+        }
+    }
+
+    // All 10 knobs and 4 toggles must be present AND focusable - a
+    // zero-match loop must not pass vacuously.
+    CHECK (knobsSeen == 10);
+    CHECK (togglesSeen == 4);
+
+    auto* scaleButton = editor.findChildWithID ("scaleButton");
+    REQUIRE (scaleButton != nullptr);
+    CHECK (scaleButton->getWantsKeyboardFocus());
+}
+
+TEST_CASE ("Arrow keys step knobs by a practical amount, Shift+Arrow steps finer", "[gui][a11y]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    AureateAudioProcessorEditor editor (processor);
+
+    // Tone: linear -100..+100 %, 0.1 interval (ParameterLayout.cpp) - the
+    // base-class step would be 0.1 over a 200-unit range (2000 presses).
+    auto* knob = findChildByTitle<juce::Slider> (editor, "Tone");
+    REQUIRE (knob != nullptr);
+
+    knob->setValue (0.0, juce::sendNotificationSync);
+
+    // Called through Component& for the same [class.access.virt] reason
+    // documented on createHandlerForTest().
+    juce::Component& knobAsComponent = *knob;
+
+    // Plain Right = 1% of the 200-unit range = 2.0.
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey)));
+    CHECK (knob->getValue() == Catch::Approx (2.0).margin (1.0e-4));
+
+    // Shift+Right = 0.1% = 0.2 (the keyboard analog of Shift-drag).
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey,
+                                                          juce::ModifierKeys::shiftModifier, 0)));
+    CHECK (knob->getValue() == Catch::Approx (2.2).margin (1.0e-4));
+
+    // Plain Left steps back down symmetrically.
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::leftKey)));
+    CHECK (knob->getValue() == Catch::Approx (0.2).margin (1.0e-4));
+
+    // PageDown = 10% = 20.0.
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::pageDownKey)));
+    CHECK (knob->getValue() == Catch::Approx (-19.8).margin (1.0e-4));
+
+    // Home/End jump to the range extremes (WAI-ARIA slider pattern).
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::homeKey)));
+    CHECK (knob->getValue() == Catch::Approx (-100.0).margin (1.0e-4));
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::endKey)));
+    CHECK (knob->getValue() == Catch::Approx (100.0).margin (1.0e-4));
+
+    // Ctrl/Cmd-modified presses are host shortcuts - never consumed.
+    CHECK_FALSE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey,
+                                                              juce::ModifierKeys::ctrlModifier, 0)));
+    CHECK (knob->getValue() == Catch::Approx (100.0).margin (1.0e-4));
+}
+
+TEST_CASE ("Choice knobs step by exactly one choice per arrow press", "[gui][a11y]")
+{
+    AureateAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    AureateAudioProcessorEditor editor (processor);
+
+    // Character: 3-choice parameter, slider range 0..2 with interval 1 -
+    // a 1% proportional step would collapse to zero under interval
+    // snapping, so KeyboardSteps.h's one-interval fallback must kick in.
+    auto* knob = findChildByTitle<juce::Slider> (editor, "Character");
+    REQUIRE (knob != nullptr);
+
+    knob->setValue (0.0, juce::sendNotificationSync);
+    juce::Component& knobAsComponent = *knob;
+
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::rightKey)));
+    CHECK (knob->getValue() == Catch::Approx (1.0).margin (1.0e-4));
+
+    REQUIRE (knobAsComponent.keyPressed (juce::KeyPress (juce::KeyPress::leftKey)));
+    CHECK (knob->getValue() == Catch::Approx (0.0).margin (1.0e-4));
 }
