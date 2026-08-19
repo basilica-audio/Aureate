@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-19
+
+The M3 GUI release: the functional slider/combo-box editor is replaced by the photoreal
+"tubecomp" faceplate - the pilot for the suite-wide M3 GUI wave shared with requiem,
+tenebrae and apotheosis.
+
+### Added
+
+- **M3 photoreal GUI (tubecomp design)** (PR #29). Single baked master render with small
+  live overlays, following silentium's master-baseline architecture. Ten physical knobs
+  (Drive, Warmth, Tone, Output, Mix, Bias, Character, Glue Threshold, Glue Makeup, Iron)
+  and four toggles (Glue, Auto Gain, Glue Model, Quality); every other parameter remains
+  fully automatable/preset-only - mapping table and rationale in `docs/gui-mapping.md`.
+- Four design-agnostic `src/gui/` components, reusable by the sibling plugins against
+  their own master renders: `HubNeedle` (pivot-centred sprite rotation with ballistic
+  smoothing), `MasterCropKnob` (feathered circular master-crop rotary), `SubtractiveGlow`
+  (tube-vent breathing overlay), and `ToggleZoneSwap` (toggle lever zone-crop swap), plus
+  `Flicker.h` taken verbatim from silentium.
+- VU needle driven by a new real-time-safe `getCurrentOutputLevelDb()` (post-chain,
+  including Output trim), converted at the suite's Standard-A calibration
+  (0 VU = -18 dBFS) against a dB-to-angle tick table measured directly from the
+  production master render (`analysis/measure_dial_ticks.py`).
+- Elision-safe allocation-guard self-test and a sample-rate-matrix reprepare test
+  (44.1k -> 96k -> 192k, crossing 32/2048-sample blocks and a mono/stereo bus-layout
+  change) (PR #30).
+
+### Changed
+
+- `docs/manual.md`: "Under the hood" engineering notes for the v0.3.0 Glue/Iron/HQ work,
+  an explicit reported-latency statement (no control ever moves `getLatencySamples()`),
+  and a "Known limitations" section; corrected the Iron stage's documented low-end HD3
+  slope from 12 dB/octave to the measured ~10.3 dB/octave (PR #27).
+- Branding: v3 flat squircle icon (no dish/ring) (PR #28).
+
 ## [0.3.0] - 2026-07-27
 
 The "Glue" release: the program-dependent bus dynamics the plugin's name always implied,
