@@ -183,7 +183,7 @@ AureateAudioProcessorEditor::AureateAudioProcessorEditor (AureateAudioProcessor&
     for (size_t i = 0; i < toggleLayout.size(); ++i)
     {
         auto& entry = toggleLayout[i];
-        toggles[i].button = std::make_unique<juce::ToggleButton> (juce::String());
+        toggles[i].button = std::make_unique<basilica::gui::FocusRingToggle> (juce::String());
         toggles[i].button->setColour (juce::ToggleButton::tickColourId, juce::Colours::transparentBlack);
         toggles[i].button->setColour (juce::ToggleButton::tickDisabledColourId, juce::Colours::transparentBlack);
         toggles[i].button->setColour (juce::ToggleButton::textColourId, juce::Colours::transparentBlack);

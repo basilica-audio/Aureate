@@ -5,6 +5,7 @@
 #include <array>
 #include <memory>
 
+#include "gui/FocusRingToggle.h"
 #include "gui/HubNeedle.h"
 #include "gui/MasterCropKnob.h"
 #include "gui/SubtractiveGlow.h"
@@ -67,7 +68,10 @@ private:
 
     struct Toggle
     {
-        std::unique_ptr<juce::ToggleButton> button;
+        // FocusRingToggle rather than plain juce::ToggleButton (issue #5,
+        // WCAG 2.4.7): the control is intentionally invisible, so keyboard
+        // focus needs its own visible ring - see gui/FocusRingToggle.h.
+        std::unique_ptr<basilica::gui::FocusRingToggle> button;
         std::unique_ptr<ButtonAttachment> attachment;
         juce::Image otherPositionZoneImage; // the pre-cropped "away from default" pose (toggle_N_down.png)
     };
