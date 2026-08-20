@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-20
+
+An accessibility release. Every control on the tubecomp faceplate - all ten knobs and all
+four toggles - is now reachable and operable from the keyboard alone, with a focus
+indicator that is actually visible. Nothing in the audio path changed; a v0.4.0 session
+loads and renders bit-identically, and reported latency is unchanged.
+
+### Added
+
+- **WAI-ARIA-style keyboard stepping on the ten knobs** (`src/gui/KeyboardSteps.h`, PR
+  #32). Arrow moves 1% of the control's range, Shift+Arrow 0.1% - the keyboard analog of
+  the Shift-drag fine mode the knobs already had on the mouse - PageUp/PageDown 10%, and
+  Home/End the range extremes. Steps are taken in the slider's proportional domain, so a
+  skewed range sweeps as evenly under the arrow keys as under a drag, and the result is
+  still snapped to the parameter's own interval grid, so quantisation is never violated.
+  A focus flag alone would not have sufficed: JUCE's stock handler steps by the raw
+  parameter interval (0.1 over Tone's 200-unit range) and refuses outright while any
+  modifier key is held, so Shift+Arrow did nothing at all. Where a parameter's own
+  quantisation is coarser than the step being asked for - the discrete Character and Glue
+  Model choices - the helper falls back to exactly one interval in the intended
+  direction, so a key press is never silently swallowed and a choice control advances one
+  entry per press. Ctrl/Cmd-modified arrows are deliberately left to the host.
+- **`src/gui/FocusRingToggle.h`**: a focus-visible `juce::ToggleButton` for the four
+  toggles. They are deliberately invisible controls - every tick and text colour is
+  `transparentBlack`, the visible lever being the `ToggleZoneSwap` crop over the baked
+  master - and `LookAndFeel_V4::drawToggleButton` draws no focus indication of its own,
+  so keyboard focus on them was previously invisible even once it could be reached. The
+  subclass draws the same minimal, self-contained ring `MasterCropKnob::paint()` uses.
+- New `tests/gui/EditorAccessibilityTests.cpp` coverage pinning the contract: focus
+  reachability of all ten knobs, all four toggles and the scale button (asserted by
+  count, so a zero-match loop cannot pass vacuously); coarse/fine/page/Home/End stepping
+  on Tone; one-choice-per-press stepping on Character; and Ctrl/Cmd passthrough.
+
+### Fixed
+
+- **The ten knobs could not be reached by keyboard at all** (PR #32). `juce::Slider::
+  init()` ships `setWantsKeyboardFocus(false)` (JUCE 8.0.14, `juce_Slider.cpp:1461`) and
+  `MasterCropKnob` never opted back in, so Tab skipped past every knob, the WCAG 2.4.7
+  focus ring already drawn in `paint()` could never appear, and no key press ever reached
+  a knob. They now take focus in reading order and show their ring while focused.
+
+### Known limitations
+
+- This release covers **keyboard** operation (WCAG 2.1.1, 2.4.7). Assistive-technology
+  increment and decrement actions - VoiceOver's rotor, NVDA's value adjustment - never
+  reach `keyPressed()`; they go through JUCE's accessibility value interface, which still
+  reports the raw parameter interval as its step size. A screen-reader user therefore
+  still moves Tone 0.1 at a time. Closing that gap means giving each control a custom
+  `AccessibilityHandler` carrying its own value interface - the next step, not part of
+  this release.
+
 ## [0.4.0] - 2026-08-19
 
 The M3 GUI release: the functional slider/combo-box editor is replaced by the photoreal
