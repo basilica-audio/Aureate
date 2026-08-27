@@ -181,7 +181,18 @@ TEST_CASE ("6.11 Iron: the resonance bump sits where it is documented, at the do
     const auto bumpGain = atBump - atReference;
 
     INFO ("bump gain at " << IronStage::bumpFrequencyHz << " Hz = " << bumpGain << " dB");
-    CHECK (bumpGain == Catch::Approx (IronStage::maximumBumpDb).margin (0.5));
+    // Derived bound on the measurement's systematic error (all terms in dB):
+    //   - the probe is snapped to the 2^17-point bin grid, so it sits at
+    //     35.156 Hz rather than 35.0; the RBJ peaking response
+    //     (A = 10^(1.5/40), Q = 1.10 at full amount) reads 1.4e-4 below its
+    //     centre gain there;
+    //   - the bump's own skirt lifts the 1 kHz reference by 1.5e-3;
+    //   - the 18 kHz high-cut (Q = 0.80) trims the 1 kHz reference by 5.8e-3;
+    //   - the ADAA midpoint average is a (1 + z^-1)/2 zero, gain
+    //     cos(pi f / fs): 1.2e-3 of 35 Hz vs 1 kHz difference at fs = 192k;
+    //   - tanh curvature at the -40 dBFS probe level contributes < 6e-3.
+    // Sum < 0.015; 0.05 leaves > 3x headroom.
+    CHECK (bumpGain == Catch::Approx (IronStage::maximumBumpDb).margin (0.05));
 
     // The peak must actually be at 35 Hz, not merely near it: a bump whose
     // centre drifted with sample rate would still pass a single-point gain
