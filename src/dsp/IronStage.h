@@ -123,6 +123,8 @@ public:
     // `newAmount` is the iron parameter as a 0-1 proportion.
     void setAmount (float newAmount01)
     {
+        const auto previousDrive = drive;
+
         amount = juce::jlimit (0.0f, 1.0f, newAmount01);
 
         // Drive is skewed by 0.4 (JUCE's convention: value = range *
@@ -140,6 +142,43 @@ public:
         bumpDb = maximumBumpDb * amount;
         bumpQ = bumpMinimumQ + (bumpMaximumQ - bumpMinimumQ) * amount;
         highCutHz = highCutMaximumHz + (highCutMinimumHz - highCutMaximumHz) * amount;
+
+        rescaleAdaaHistoryForDriveChange (previousDrive);
+    }
+
+    // The ADAA history is stored in the DRIVE-SCALED flux domain
+    // (v = u * fluxNormalisation * drive, see processCoreSample()), while the
+    // shaped result is divided by the CURRENT drive on the way out. That pair
+    // is an exact inverse only as long as both sides refer to the same drive -
+    // and `drive` is re-derived from the Iron amount once per block, so any
+    // Iron automation, preset recall or session restore that moves the control
+    // leaves the stored `previousV` expressed in the OLD drive's units while
+    // `v` is computed in the new one. The ADAA quotient then divides an
+    // antiderivative difference by a `delta` dominated by the drive change
+    // rather than by the signal, and the 1/drive factor downstream amplifies
+    // the result - worst exactly where a ramp from zero spends its first
+    // blocks, because drive = maximumDrive * amount^2.5 makes the RATIO
+    // between consecutive small amounts enormous.
+    //
+    // Measured before this existed: recalling the Iron Bus Weight factory
+    // preset mid-playback (Iron 0 -> 65 %) produced a +11.59 dBFS peak from
+    // material that renders at -6.01 dBFS once the ramp has settled - a
+    // 17.6 dB blast on a preset click. Re-expressing the history in the new
+    // drive's units is the whole fix: the stored value is the same flux, just
+    // in the units the next sample will be measured in, so `delta` is once
+    // again the signal's own change and the inverse pair cancels exactly.
+    //
+    // At previousDrive == 0 there is nothing to rescale (the stage was
+    // branch-skipped, so the history is zero) and nothing is scaled by zero.
+    void rescaleAdaaHistoryForDriveChange (float previousDrive) noexcept
+    {
+        if (previousDrive <= 0.0f || drive <= 0.0f || drive == previousDrive)
+            return;
+
+        const auto ratio = static_cast<double> (drive) / static_cast<double> (previousDrive);
+
+        for (auto& previous : adaaPreviousInput)
+            previous *= ratio;
     }
 
     float getDrive() const noexcept { return drive; }

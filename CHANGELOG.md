@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A factory-preset headroom gate** (`tests/PresetHeadroomTests.cpp`). Every shipped factory
+  preset is rendered through the real `AudioProcessor` at 48 kHz against the suite reference
+  programme (four plucked notes spanning E1 41.203 Hz to A5 880.000 Hz, twelve harmonics each,
+  peak-normalised to −12 dBFS) and its output peak asserted below 0 dBFS. It asserts how many
+  factory presets it exercised, so a preset library that stopped loading is distinguishable
+  from every preset passing, and it measures **both** ways a user arrives at a preset — a
+  restored session (state first, then `prepareToPlay()`) and a mid-session click in the preset
+  browser (parameters jump while the DSP is primed for the old ones). Those are not the same
+  measurement, and the difference is what found the Iron defect below.
+
+  No preset needed a trim: all fourteen render between −1.85 and −10.61 dBFS on both paths.
+
+- **An Iron amount-ramp regression test** (`tests/IronStageTests.cpp`, `[iron][headroom]`),
+  bounded by the stage's own maximum steady-state gain (`maximumBumpDb`, 1.5 dB) rather than by
+  what it happens to measure. Measured after the fix: **0.10 dB**.
+
+### Fixed
+
+- **Recalling a preset that turns Iron up produced a 17.6 dB blast.** `IronStage`'s ADAA history
+  is stored in the drive-scaled flux domain (`v = u · fluxNormalisation · drive`) while
+  `processCoreSample()` divides the shaped result by the *current* `drive`, so the
+  integrator/differentiator inverse pair only cancels while both refer to the same drive. Since
+  `drive` is re-derived from the Iron amount once per block, **any** movement of the control —
+  automation, a preset recall, a session restore — left the stored history in the old drive's
+  units. The ADAA quotient then divided an antiderivative difference by a `delta` dominated by
+  the drive change rather than by the signal, and the `1/drive` factor downstream amplified the
+  result — worst exactly where a ramp from zero spends its first blocks, because
+  `drive = maximumDrive · amount^2.5` makes the *ratio* between consecutive small amounts
+  enormous.
+
+  Measured through the real processor: clicking *Iron Bus Weight* (Iron 0 → 65 %) mid-playback
+  rendered the reference programme at **+11.59 dBFS**, where the same preset restored with the
+  session renders at −6.01 dBFS. It is now **−4.11 dBFS**.
+
+  The fix re-expresses the stored history in the new drive's units when the amount changes
+  (`IronStage::rescaleAdaaHistoryForDriveChange()`) — the same flux, just in the units the next
+  sample will be measured in, so `delta` is once again the signal's own change and the inverse
+  pair cancels exactly. Settled audio at any fixed Iron amount is bit-identical, and Iron 0 %
+  is still branch-skipped entirely.
+
 ### Changed
 
 - **Plugin metadata now carries the vendor URL, the copyright string, a real description and

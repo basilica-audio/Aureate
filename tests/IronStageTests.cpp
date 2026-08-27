@@ -349,3 +349,87 @@ TEST_CASE ("Iron: the drive mapping matches the documented skew and reaches its 
     CHECK (stage.getDrive() == Catch::Approx (IronStage::maximumDrive * std::pow (0.5f, 2.5f)).margin (1.0e-5f));
     CHECK (stage.getDrive() < IronStage::maximumDrive * 0.25f);
 }
+
+TEST_CASE ("Iron: ramping the amount mid-signal stays inside the stage's own steady-state gain",
+           "[dsp][iron][stability][headroom]")
+{
+    // The defect this pins. IronStage's ADAA history is stored in the
+    // DRIVE-SCALED flux domain (v = u * fluxNormalisation * drive) while
+    // processCoreSample() divides the shaped result by the CURRENT drive, so
+    // the integrator/differentiator inverse pair only cancels while both refer
+    // to the same drive. `drive` is re-derived from the Iron amount once per
+    // block, so ANY movement of the control - automation, a preset recall, a
+    // session restore - used to leave the stored history in the old drive's
+    // units. The ADAA quotient then divided an antiderivative difference by a
+    // `delta` dominated by the drive change rather than by the signal, and the
+    // 1/drive factor downstream amplified it - worst exactly where a ramp from
+    // zero spends its first blocks, since drive = maximumDrive * amount^2.5
+    // makes the RATIO between consecutive small amounts enormous.
+    //
+    // Measured through the full processor before the fix: recalling the Iron
+    // Bus Weight factory preset mid-playback (Iron 0 -> 65 %) rendered the
+    // reference programme at +11.59 dBFS where the settled preset renders at
+    // -6.01 dBFS. A 17.6 dB blast on a preset click.
+    //
+    // THE BOUND IS DERIVED, not measured-then-blessed. Away from the ramp this
+    // stage is an exact inverse pair (see the "exact inverse pair in the linear
+    // region" case above) followed by two filters, so the most it can add to a
+    // steady input is its LF resonance bump, IronStage::maximumBumpDb = 1.5 dB,
+    // and the core's saturation only ever subtracts. A transition that stays
+    // inside that ceiling is therefore adding nothing of its own, which is what
+    // "click-free" means for this stage. Anything above it is transition
+    // artefact by construction.
+    constexpr double maximumBumpDb = 1.5;
+    constexpr float probeAmplitude = 0.5f;
+    constexpr double probeFrequencyHz = 110.0; // low, where the flux path has the most gain
+    constexpr int blockSize = 512;
+    constexpr int numBlocks = 64;
+
+    IronStage stage;
+    stage.setAmount (0.0f);
+    stage.prepare (makeSpec (blockSize));
+
+    juce::AudioBuffer<float> buffer (1, blockSize);
+
+    auto worstSample = 0.0;
+    juce::int64 sampleIndex = 0;
+
+    for (int block = 0; block < numBlocks; ++block)
+    {
+        // Flat at 0 % for the first quarter (so the stage is genuinely
+        // branch-skipped and cold, exactly as it is before a preset click),
+        // then a ramp to 65 % - Iron Bus Weight's own setting - across the
+        // rest, one step per block, which is how the engine's per-block
+        // smoother actually moves it.
+        const auto rampStart = numBlocks / 4;
+        const auto amount = block < rampStart
+                                ? 0.0f
+                                : 0.65f * static_cast<float> (block - rampStart)
+                                      / static_cast<float> (numBlocks - rampStart - 1);
+
+        TestHelpers::fillWithSine (buffer, oversampledRate, probeFrequencyHz, probeAmplitude, sampleIndex);
+        sampleIndex += blockSize;
+
+        if (amount > 0.0f)
+        {
+            stage.setAmount (amount);
+            stage.applyCoefficients();
+
+            auto* data = buffer.getWritePointer (0);
+
+            for (int sample = 0; sample < blockSize; ++sample)
+                data[sample] = stage.processCoreSample (data[sample], 0);
+
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            stage.processFilters (audioBlock);
+        }
+
+        worstSample = juce::jmax (worstSample, static_cast<double> (buffer.getMagnitude (0, blockSize)));
+    }
+
+    const auto excessDb = juce::Decibels::gainToDecibels (worstSample / static_cast<double> (probeAmplitude));
+
+    INFO ("worst peak across the ramp: " << excessDb << " dB relative to the input, ceiling "
+          << maximumBumpDb << " dB");
+    CHECK (excessDb <= maximumBumpDb);
+}
