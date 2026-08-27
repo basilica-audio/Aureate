@@ -102,7 +102,7 @@ The reasoning behind v0.3.0's additions lives in `docs/architecture.md`; the sou
 - **The Glue section models no detector nonlinearity - it is envelope-only by design, running at 1x the host rate.** If what you want is the *distortion* character of a bus compressor rather than its dynamics, this section doesn't provide that; the Character saturator and Iron stage further down the chain do.
 - **Deliberately out of scope for this release**: tape record/reproduce pre/de-emphasis and level-dependent HF loss modelling, a fully physically-modelled iron core, a push-pull Newton-solved Vari-Mu gain cell, stochastic wow/flutter and speed-dependent head bump/hiss, M/S processing, an input-calibration/headroom control, a gain-reduction meter with true ballistics, and linear-phase or higher-order oversampling options.
 - **The editor is still the functional slider GUI carried over from v0.1** - the preset bar at the top, then one rotary per float parameter (plus a combo box per choice parameter) laid out in signal-flow order. A custom photoreal panel is a later, suite-wide milestone.
-- **Pre-1.0.** Release binaries for macOS and Windows are currently unsigned. AU, VST3 and Standalone only - no AAX. Licensed AGPLv3. Breaking changes to saved state remain possible until v1.0.0 (v0.2.0 made two, both with a documented, tolerant migration - see Upgrading below).
+- **Pre-1.0.** Release binaries for macOS are Developer-ID-signed, notarised and stapled; Windows binaries are not yet Authenticode-signed. AU, VST3 and Standalone only - no AAX. Licensed AGPLv3. Breaking changes to saved state remain possible until v1.0.0 (v0.2.0 made two, both with a documented, tolerant migration - see Upgrading below).
 
 ## Upgrading from v0.2.x
 
