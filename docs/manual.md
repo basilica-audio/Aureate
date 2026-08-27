@@ -73,7 +73,7 @@ Drive/Warmth's defaults are tuned assuming a nominal **-18 dBFS RMS** input leve
 
 ## Presets
 
-The preset bar at the top of the editor lets you browse Factory and User presets (`<` / preset name / `>` to step through, click the name for the full menu), Save/Save As/Delete user presets, Import/Export single presets or bank zips, and set the current state as your own startup default. Fourteen factory presets ship in v0.3.0 - the eleven from v0.2.0, byte-identical, plus **Orchestral Bus Glue**, **Soft Tube Glue** and **Iron Bus Weight**, which show the new section in its three most useful shapes. See `docs/presets.md` for what each one is for. Presets are stored per-user at `~/Library/Audio/Presets/Yves Vogl/Aureate/` on macOS (`%APPDATA%/Yves Vogl/Aureate/Presets/` on Windows).
+The preset bar at the top of the editor lets you browse Factory and User presets (`<` / preset name / `>` to step through, click the name for the full menu), Save/Save As/Delete user presets, Import/Export single presets or bank zips, and set the current state as your own startup default. Fourteen factory presets ship in v0.3.0 - the eleven from v0.2.0, byte-identical, plus **Orchestral Bus Glue**, **Soft Tube Glue** and **Iron Bus Weight**, which show the new section in its three most useful shapes. See `docs/presets.md` for what each one is for. Presets are stored per-user at `~/Library/Audio/Presets/Basilica Audio/Aureate/` on macOS (`%APPDATA%/Basilica Audio/Aureate/Presets/` on Windows).
 
 ## Under the hood
 
