@@ -1,17 +1,19 @@
 # Factory presets
 
-Eleven factory presets ship with Aureate v0.2.0, embedded via BinaryData from
+Fourteen factory presets ship with Aureate, embedded via BinaryData from
 `presets/factory/*.json` (see `.scaffold/specs/preset-system-m2.md` for the
 suite-wide M2 architecture this repo implements, and sibling `basilica-audio/
 nave`'s `docs/preset-system-notes.md` for the pilot's build-wiring recipe
-this repo followed). Ten are sourced starting points from
-`docs/design-brief.md`'s "Factory Presets" section (§4); the eleventh
-(**Default**) is the certified
+this repo followed). Most are sourced starting points from
+`docs/design-brief.md`'s "Factory Presets" section (§4); **Default** is the certified
 passthrough state, both this plugin's out-of-the-box default and an explicit
 one-click way back to "no coloration." See the design brief's own Honesty
 section (§6) for what these numbers are and aren't calibrated against
 (research-derived engineering choices tuned for measurable separation, not
 transcribed from any specific hardware or commercial preset).
+
+**Three of them are not described below yet** — *Iron Bus Weight*, *Orchestral Bus Glue* and
+*Soft Tube Glue*, added in v0.3.0 (basilica-audio/Aureate#43).
 
 | Preset | Category | Intent |
 |---|---|---|

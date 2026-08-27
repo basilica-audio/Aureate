@@ -47,6 +47,10 @@ juce_add_plugin(Aureate
     PLUGIN_CODE Aurt
     FORMATS AU VST3 Standalone
     PRODUCT_NAME "Aureate"
+    COMPANY_WEBSITE "https://basilica-audio.github.io/website/"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 Yves Vogl"
+    DESCRIPTION "Tape and console saturation glue for orchestral and layered material"
+    VST3_CATEGORIES Fx Distortion Dynamics
     ICON_BIG "docs/assets/icon.png"
     COPY_PLUGIN_AFTER_BUILD TRUE
     IS_SYNTH FALSE
