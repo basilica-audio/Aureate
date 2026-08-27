@@ -8,6 +8,7 @@
 #include "gui/FocusRingToggle.h"
 #include "gui/HubNeedle.h"
 #include "gui/MasterCropKnob.h"
+#include "gui/PlateTypography.h"
 #include "gui/SubtractiveGlow.h"
 #include "presets/PresetBar.h"
 
@@ -34,6 +35,10 @@ class AureateAudioProcessor;
 //   4. vent-glow subtractive breathing (paint(), SubtractiveGlow)
 //   5. HubNeedle (own child component, VU needle only - the dial face
 //      itself stays fully baked)
+//   6. engraved typography (paint(), PlateTypography - lettering for the
+//      three baked-blank brass nameplates + a label under each knob; drawn
+//      LAST so neither the toggle-zone swap nor the vent-glow blit can
+//      cover it)
 class AureateAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                           private juce::Timer
 {
@@ -80,6 +85,7 @@ private:
     void configureToggle (Toggle& toggle, const juce::String& parameterId, const juce::String& labelText);
     void applyScaleStep (int newStepIndex);
     void cycleScale();
+    void drawPlateTypography (juce::Graphics& g, juce::Point<float> plateOrigin, float scale) const;
 
     AureateAudioProcessor& audioProcessor;
 
@@ -97,6 +103,7 @@ private:
     static constexpr int numToggles = 4;
     std::array<Toggle, numToggles> toggles;
 
+    basilica::gui::PlateTypography typography;
     basilica::gui::SubtractiveGlow ventGlow;
     float ventGlowMix = 1.0f;
     basilica::gui::GlowMixState ventGlowState;
