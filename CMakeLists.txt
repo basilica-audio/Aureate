@@ -109,6 +109,15 @@ juce_add_binary_data(AureateBinaryData SOURCES
     resources/gui/toggle_3_down.png
     resources/gui/toggle_4_down.png
     resources/gui/vent_glow_tubecomp.png
+    # Suite typography: EB Garamond (OFL, resources/fonts/OFL-EBGaramond.txt),
+    # the same two faces sibling basilica-audio/silentium embeds - used by
+    # src/gui/PlateTypography for the engraved plaque/knob lettering drawn
+    # over the master render (the suite-wide typography pass: baked text
+    # never survived the AI render loop legibly, so scale numerals and
+    # labels are set locally as a sharp text layer instead - owner decision
+    # 2026-07-26).
+    resources/fonts/EBGaramond-Regular.ttf
+    resources/fonts/EBGaramond-SemiBold.ttf
 )
 
 # ==============================================================================

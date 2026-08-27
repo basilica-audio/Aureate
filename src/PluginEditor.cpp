@@ -21,7 +21,8 @@ namespace
     struct KnobLayoutEntry
     {
         const char* parameterId;
-        const char* labelText; // accessible name only - no baked text labels
+        const char* labelText; // accessible name (title/tooltip surface)
+        const char* engravedLabel; // the plate's own engraved caps (typography pass) - deliberately terser than labelText where the plaque/section context already disambiguates (docs/gui-mapping.md)
         float cxMaster, cyMaster, rMaster; // true measured knob geometry (crop source, see layoutManifest provenance in PluginEditorLayout.h)
         int cx1x; // interactive slider hit-area X centre (Y comes from isUpperRow's shared row constant)
         bool isUpperRow;
@@ -49,16 +50,43 @@ namespace
     // triples are still the exact (cxMaster, cyMaster, rMaster, cx1x) shape
     // as every other entry.
     constexpr std::array<KnobLayoutEntry, 10> knobLayout {
-        KnobLayoutEntry { ParamIDs::drive, "Drive", 306.0f, 493.0f, 51.0f, 200, true },
-        KnobLayoutEntry { ParamIDs::warmth, "Warmth", 455.0f, 493.0f, 50.0f, 298, true },
-        KnobLayoutEntry { ParamIDs::tone, "Tone", 923.0f, 493.0f, 50.0f, 604, true },
-        KnobLayoutEntry { ParamIDs::output, "Output", 1072.0f, 493.0f, 51.0f, 701, true },
-        KnobLayoutEntry { ParamIDs::mix, "Mix", 306.0f, 637.0f, 51.0f, 200, false },
-        KnobLayoutEntry { ParamIDs::bias, "Bias", 451.0f, 642.0f, 40.0f, 295, false },
-        KnobLayoutEntry { ParamIDs::character, "Character", 612.0f, 635.0f, 49.0f, 400, false },
-        KnobLayoutEntry { ParamIDs::compThreshold, "Glue Threshold", 775.0f, 642.0f, 40.0f, 507, false },
-        KnobLayoutEntry { ParamIDs::compMakeup, "Glue Makeup", 924.0f, 637.0f, 51.0f, 604, false },
-        KnobLayoutEntry { ParamIDs::iron, "Iron", 1092.0f, 648.0f, 38.0f, 714, false },
+        KnobLayoutEntry { ParamIDs::drive, "Drive", "DRIVE", 306.0f, 493.0f, 51.0f, 200, true },
+        KnobLayoutEntry { ParamIDs::warmth, "Warmth", "WARMTH", 455.0f, 493.0f, 50.0f, 298, true },
+        KnobLayoutEntry { ParamIDs::tone, "Tone", "TONE", 923.0f, 493.0f, 50.0f, 604, true },
+        KnobLayoutEntry { ParamIDs::output, "Output", "OUTPUT", 1072.0f, 493.0f, 51.0f, 701, true },
+        KnobLayoutEntry { ParamIDs::mix, "Mix", "MIX", 306.0f, 637.0f, 51.0f, 200, false },
+        KnobLayoutEntry { ParamIDs::bias, "Bias", "BIAS", 451.0f, 642.0f, 40.0f, 295, false },
+        KnobLayoutEntry { ParamIDs::character, "Character", "CHARACTER", 612.0f, 635.0f, 49.0f, 400, false },
+        KnobLayoutEntry { ParamIDs::compThreshold, "Glue Threshold", "THRESHOLD", 775.0f, 642.0f, 40.0f, 507, false },
+        KnobLayoutEntry { ParamIDs::compMakeup, "Glue Makeup", "MAKEUP", 924.0f, 637.0f, 51.0f, 604, false },
+        KnobLayoutEntry { ParamIDs::iron, "Iron", "IRON", 1092.0f, 648.0f, 38.0f, 714, false },
+    };
+
+    // ==================== typography pass ====================
+    // Plaque lettering (the three brass nameplates baked BLANK in the
+    // master - see aurt::layout's plaque rects and docs/gui-mapping.md's
+    // typography section for the full rationale): classic hardware
+    // arrangement - maker's mark left, type designation right, model name
+    // on the prominent centre plaque under the VU dial.
+    constexpr const char* plaqueLeftText = "BASILICA AUDIO";
+    constexpr const char* plaqueCentreText = "AUREATE";
+    constexpr const char* plaqueRightText = "BUS SATURATOR";
+
+    // Engraving on the aged brass plaques: near-black warm-brown ink (real
+    // plaque engravings fill with oxide/grime, not pure black), faint warm
+    // lip below.
+    const basilica::gui::EngravedTextStyle plaqueSideStyle {
+        juce::Colour (0xd8241808), juce::Colour (0x36fff0c0), 13.0f, 0.10f, true
+    };
+    const basilica::gui::EngravedTextStyle plaqueCentreStyle {
+        juce::Colour (0xdd241808), juce::Colour (0x36fff0c0), 16.0f, 0.14f, true
+    };
+
+    // Engraved knob labels on the steel plate: dark charcoal ink with a
+    // barely-there warm lip - quiet enough to sit IN the metal rather than
+    // printed on it.
+    const basilica::gui::EngravedTextStyle knobLabelStyle {
+        juce::Colour (0xd215110c), juce::Colour (0x2cfff2d0), 12.0f, 0.10f, true
     };
 
     struct ToggleLayoutEntry
@@ -138,7 +166,9 @@ namespace
 AureateAudioProcessorEditor::AureateAudioProcessorEditor (AureateAudioProcessor& processorToEdit)
     : juce::AudioProcessorEditor (&processorToEdit),
       audioProcessor (processorToEdit),
-      presetBar (initLocalisationThenGetPresetManager (processorToEdit))
+      presetBar (initLocalisationThenGetPresetManager (processorToEdit)),
+      typography (BinaryData::EBGaramondRegular_ttf, BinaryData::EBGaramondRegular_ttfSize,
+                  BinaryData::EBGaramondSemiBold_ttf, BinaryData::EBGaramondSemiBold_ttfSize)
 {
     masterImage = loadImage (BinaryData::master_tubecomp_png, BinaryData::master_tubecomp_pngSize);
 
@@ -297,9 +327,9 @@ void AureateAudioProcessorEditor::paint (juce::Graphics& g)
 
     // 1. Baseline plate: the single master render, filling the plate bounds.
     // Bakes the steel plate, wooden cheeks, handle, empty VU dial, all 10
-    // knobs at 12 o'clock, all 4 toggles UP, tube vents at full glow, and the
-    // 3 blank brass nameplates - nothing else is drawn for any of those
-    // elements.
+    // knobs at 12 o'clock, all 4 toggles UP, tube vents at full glow, and
+    // the 3 brass nameplates (baked BLANK - their lettering is the
+    // typography layer, step 5 below).
     if (masterImage.isValid())
         g.drawImage (masterImage, plateBounds, juce::RectanglePlacement::centred, false);
 
@@ -329,11 +359,61 @@ void AureateAudioProcessorEditor::paint (juce::Graphics& g)
         ventGlow.drawZone (g, destRect, ventGlowMix);
     }
 
+    // 5. Typography layer (suite typo phase - PlateTypography.h): engraved
+    // lettering for the three baked-blank brass nameplates plus a label
+    // under each knob. Drawn LAST so neither the toggle-zone swap (whose
+    // rects graze the outermost knob-label boxes over plain steel) nor the
+    // vent-glow blit can cover it - and inside paint() proper, so the
+    // clipped per-tick repaint (ventGlowRepaintBounds) re-renders any
+    // lettering it intersects instead of erasing it.
+    drawPlateTypography (g, plateOrigin, scale);
+
     // (The VU needle is a separate HubNeedle child component, drawn after
     // this method returns - see resized() for its bounds. Everything else -
     // wooden cheeks, handle, tube-vent grille structure, the VU dial face,
-    // the knobs' own baked outer rim/specular highlight, the 3 blank brass
-    // nameplates - stays BAKED in the master, no draw calls for any of it.)
+    // the knobs' own baked outer rim/specular highlight - stays BAKED in
+    // the master, no draw calls for any of it.)
+}
+
+void AureateAudioProcessorEditor::drawPlateTypography (juce::Graphics& g, juce::Point<float> plateOrigin, float scale) const
+{
+    // Master px -> @1x plate-local px (same factor the whole layout table
+    // is derived with), then -> screen via plateOrigin + window scale.
+    constexpr auto masterScale = (float) plateWidth1x / (float) masterCanvasWidthPx;
+
+    const auto plaqueField = [&] (const PlaqueRectMasterPx& p)
+    {
+        const auto inset = (float) plaqueEndInsetMasterPx;
+        return juce::Rectangle<float> (((float) p.x + inset) * masterScale,
+                                       (float) p.y * masterScale,
+                                       ((float) p.w - 2.0f * inset) * masterScale,
+                                       (float) p.h * masterScale);
+    };
+
+    const auto toScreen = [&] (juce::Rectangle<float> local1x)
+    {
+        return juce::Rectangle<float> (plateOrigin.x + local1x.getX() * scale,
+                                       plateOrigin.y + local1x.getY() * scale,
+                                       local1x.getWidth() * scale,
+                                       local1x.getHeight() * scale);
+    };
+
+    typography.drawEngraved (g, plaqueLeftText, toScreen (plaqueField (plaqueLeftMasterPx)), scale, plaqueSideStyle);
+    typography.drawEngraved (g, plaqueCentreText, toScreen (plaqueField (plaqueCentreMasterPx)), scale, plaqueCentreStyle);
+    typography.drawEngraved (g, plaqueRightText, toScreen (plaqueField (plaqueRightMasterPx)), scale, plaqueSideStyle);
+
+    for (const auto& entry : knobLayout)
+    {
+        const auto rowY = entry.isUpperRow ? knobRowUpperY1x : knobRowLowerY1x;
+        const auto radius = (entry.isUpperRow ? knobDiameterUpper1x : knobDiameterLower1x) / 2;
+
+        const juce::Rectangle<float> labelBox1x ((float) (entry.cx1x - knobLabelWidth1x / 2),
+                                                 (float) (rowY + radius + knobLabelGap1x),
+                                                 (float) knobLabelWidth1x,
+                                                 (float) knobLabelHeight1x);
+
+        typography.drawEngraved (g, entry.engravedLabel, toScreen (labelBox1x), scale, knobLabelStyle);
+    }
 }
 
 void AureateAudioProcessorEditor::resized()

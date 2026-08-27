@@ -137,3 +137,38 @@ parameter):
 
 `src/gui/Flicker.h` is copied verbatim from `basilica-audio/silentium`
 (unmodified - already fully design-agnostic).
+
+## Typography pass (suite typo phase)
+
+Owner decision 2026-07-26 ("Weg 2", after AI-baked scale numerals failed 3x
+on the victorian design): text is never baked into the AI master - it is set
+locally as a sharp JUCE text layer in the suite serif (EB Garamond, embedded
+via BinaryData, OFL - the same two faces sibling basilica-audio/silentium
+ships). Implementation: `src/gui/PlateTypography.h` (design-agnostic engraved
+draw: dark incision ink + a one-scaled-pixel lit lip offset DOWN, the inverse
+of silentium's raised gold-on-dark labels), drawn LAST in
+`PluginEditor::paint()` so neither the toggle-zone swap nor the vent-glow
+blit can cover it.
+
+What is lettered:
+
+- **The three brass nameplates** (baked BLANK in the master; rects measured
+  directly against `master_tubecomp.png` for this pass, see
+  `aurt::layout::plaque*MasterPx`): classic hardware arrangement - maker's
+  mark left (`BASILICA AUDIO`), type designation right (`BUS SATURATOR`),
+  model name on the prominent centre plaque under the VU (`AUREATE`).
+- **One engraved label under each of the 10 knobs**, centred on the knob's
+  own interactive hit-area cx (so label and knob can never drift apart).
+  Labels are terser than the accessible names where the section context
+  already disambiguates: `THRESHOLD`/`MAKEUP` for Glue Threshold/Glue Makeup.
+
+Deliberately NOT lettered: the four toggles. Every candidate spot either
+collides with a toggle-zone swap rect's own lever art (a zone blit would sit
+under lettering that describes a *different* state), the left/right plaques
+(directly above the upper zones), or the plate's bottom bevel (below the
+lower zones). Their names stay on the accessible title/tooltip surface.
+
+Tests: `tests/gui/EditorTypographyTests.cpp` (snapshot dark-coverage proof
+against the raw master's clean plaque fields, a flat-ground glyph-rendering
+unit proof of the shared draw path, and a layout invariant keeping every
+label out of its knob's hit-area).

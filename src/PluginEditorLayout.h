@@ -138,6 +138,42 @@ namespace aurt::layout
     const juce::Rectangle<int> ventGlowZoneMasterPx { 82, 102, 1206, 266 };
     const juce::Rectangle<int> ventGlowZone1x { 54, 67, 789, 174 };
 
+    //==========================================================================
+    // Typography pass (suite typo phase, owner decision 2026-07-26: text is
+    // never baked into the AI master - it is set locally as a sharp JUCE
+    // text layer, see src/gui/PlateTypography.h). The master bakes the three
+    // brass nameplates BLANK; their rects below were measured directly
+    // against master_tubecomp.png for this pass (warm-brightness
+    // segmentation + 3x-zoom visual verification of the resulting crops).
+    // Knob labels are engraved straight into the steel below each knob's
+    // interactive hit-area; the four toggles deliberately get NO engraved
+    // label (see docs/gui-mapping.md's typography section: every candidate
+    // spot either collides with a toggle-zone swap rect's own lever art,
+    // the left/right plaques, or the plate's bottom bevel - their names
+    // stay on the accessible title/tooltip surface instead).
+    struct PlaqueRectMasterPx
+    {
+        int x, y, w, h;
+    };
+
+    constexpr PlaqueRectMasterPx plaqueLeftMasterPx { 170, 370, 300, 40 };
+    constexpr PlaqueRectMasterPx plaqueRightMasterPx { 942, 370, 255, 37 };
+    constexpr PlaqueRectMasterPx plaqueCentreMasterPx { 570, 520, 240, 38 };
+
+    // Each plaque's rounded ends carry a baked rivet - the text field must
+    // stay clear of both (measured: the rivet boss reaches ~36 master px
+    // into the plate from either end; 42 adds a small guard).
+    constexpr int plaqueEndInsetMasterPx = 42;
+
+    // Engraved knob labels: one line box centred under each knob's
+    // interactive hit-area (same cx as the slider bounds, so label and knob
+    // can never drift apart), directly below the knob's row-shared bottom
+    // edge. Height covers EB Garamond's ascender/descender at the style's
+    // 11px face (PluginEditor.cpp's knobLabelStyle).
+    constexpr int knobLabelGap1x = 3;
+    constexpr int knobLabelWidth1x = 82;
+    constexpr int knobLabelHeight1x = 14;
+
     constexpr int topStripHeight1x = 32;
     constexpr int topStripGap1x = 6;
     constexpr int scaleButtonWidth1x = 64;
