@@ -12,9 +12,6 @@ section (§6) for what these numbers are and aren't calibrated against
 (research-derived engineering choices tuned for measurable separation, not
 transcribed from any specific hardware or commercial preset).
 
-**Three of them are not described below yet** — *Iron Bus Weight*, *Orchestral Bus Glue* and
-*Soft Tube Glue*, added in v0.3.0 (basilica-audio/Aureate#43).
-
 | Preset | Category | Intent |
 |---|---|---|
 | **Default** | Init | All parameters at their off/default position - the plugin's out-of-the-box sound and the M2 default-resolution target. |
@@ -28,6 +25,9 @@ transcribed from any specific hardware or commercial preset).
 | **Parallel Grit (New York)** | Bus | A heavily driven wet signal (Valve, high Drive/Warmth) blended under a clean dry signal at 50% Mix - a classic parallel-processing technique. |
 | **Console Summing Sheen** | Bus | The "least characterful until pushed" Console archetype at a level where it stays mostly transparent - low Drive/Warmth, a touch of brightening Tone. |
 | **Air & Weight** | Bus | A Trim-forward preset showcasing HF/LF Trim independent of Tone/Warmth - positive HF and LF Trim, everything else near-neutral. |
+| **Iron Bus Weight** | Bus | Console character left at its own Drive/Warmth defaults (6 dB / 35%) - the weight comes from what's behind it: the new v0.3.0 Glue compressor engaged (VCA law, -4 dB threshold, 4:1 ratio, 3 ms attack, 0.6 s release, +2 dB makeup, sidechain high-pass at 100 Hz to keep bass out of the detector) plus a substantial 65% Iron transformer stage for low-end heft, run at HQ quality. The heaviest and most processed of the three new Glue presets. |
+| **Orchestral Bus Glue** | Bus | A lighter touch than Console's own defaults (Drive 4 dB, Warmth 20%, both below the 6 dB/35% starting point) paired with a gentle Glue pass (VCA law, 2:1 ratio, -6 dB threshold, the default 10 ms attack and Auto release, +2.5 dB makeup, 80 Hz sidechain filter) and no Iron, at HQ quality - the v0.3.0 companion to Orchestral Submix Cohesion, adding the new bus compressor to the "before it meets the metal instrumentation" cohesion pass rather than relying on saturation alone. |
+| **Soft Tube Glue** | Bus | Valve character at a gentle 3 dB Drive (below its 6 dB default), Warmth pulled back to 30% and Tone darkened to -6%, paired with the Vari-Mu Glue law - a softer-kneed, program-dependent, tube-limiter-style compressor whose attack is intrinsic rather than user-set - at a deep -10 dB threshold, a gentle 2:1 ratio, Auto release and +3 dB makeup, 60 Hz sidechain filter, at HQ quality. The most overtly vintage/tube-voiced of the three new Glue presets, contrasting with Iron Bus Weight's and Orchestral Bus Glue's VCA law. |
 
 None of the presets rely on Wow/Flutter or Hiss being audible except
 **Vintage Tape Pad**, which deliberately engages all three as its defining
